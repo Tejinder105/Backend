@@ -61,7 +61,6 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new ApiError(500, "Something went wrong while registering the user");
   }
 
-  // Generate tokens for immediate login after registration
   const { accessToken, refreshToken } = await generateAccessAndRefereshTokens(
     user._id
   );
@@ -103,14 +102,8 @@ const loginUser = asyncHandler(async (req, res) => {
     throw new ApiError(400, "userName or email is required");
   }
 
-  // Here is an alternative of above code based on logic discussed in video:
-  // if (!(userName || email)) {
-  //     throw new ApiError(400, "userName or email is required")
-
-  // }
-
   const user = await User.findOne({
-    $or: [{ userName }, { email }],
+    $or: [{ email }],
   });
 
   if (!user) {
