@@ -8,6 +8,13 @@ const flatSchema = new Schema({
     maxlength: 100
   },
   
+  // Monthly rent amount
+  rent: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  
   // Unique join code (never expires)
   joinCode: {
     type: String,
@@ -51,38 +58,6 @@ const flatSchema = new Schema({
     }
   }],
   
-  // Flat settings
-  settings: {
-    currency: {
-      type: String,
-      default: 'INR'
-    },
-    timezone: {
-      type: String,
-      default: 'Asia/Kolkata'
-    },
-    autoSplitExpenses: {
-      type: Boolean,
-      default: true
-    },
-    requireApprovalForNewMembers: {
-      type: Boolean,
-      default: false
-    }
-  },
-  
-  // Flat address (optional)
-  address: {
-    street: String,
-    city: String,
-    state: String,
-    zipCode: String,
-    country: {
-      type: String,
-      default: 'India'
-    }
-  },
-  
   // Flat statistics
   stats: {
     totalMembers: {
@@ -121,12 +96,10 @@ const flatSchema = new Schema({
 // Indexes for better performance
 flatSchema.index({ admin: 1 });
 flatSchema.index({ 'members.userId': 1 });
-// Note: joinCode index is already created by unique: true
 flatSchema.index({ status: 1 });
 
 // Methods
 flatSchema.methods.generateJoinCode = function() {
-  // Generate 6-character alphanumeric code
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
   for (let i = 0; i < 6; i++) {
@@ -136,7 +109,6 @@ flatSchema.methods.generateJoinCode = function() {
 };
 
 flatSchema.methods.addMember = function(userId, role = 'co_tenant', monthlyContribution = 0) {
-  // Check if user is already a member
   const existingMember = this.members.find(member => 
     member.userId.toString() === userId.toString()
   );
@@ -199,15 +171,19 @@ flatSchema.methods.isAdmin = function(userId) {
 };
 
 flatSchema.methods.isMember = function(userId) {
-  return this.members.some(member => 
-    member.userId.toString() === userId.toString() && member.status === 'active'
-  );
+  return this.members.some(member => {
+    // Handle both populated and non-populated userId
+    const memberId = member.userId._id ? member.userId._id.toString() : member.userId.toString();
+    return memberId === userId.toString() && member.status === 'active';
+  });
 };
 
 flatSchema.methods.getMember = function(userId) {
-  return this.members.find(member => 
-    member.userId.toString() === userId.toString()
-  );
+  return this.members.find(member => {
+    // Handle both populated and non-populated userId
+    const memberId = member.userId._id ? member.userId._id.toString() : member.userId.toString();
+    return memberId === userId.toString();
+  });
 };
 
 flatSchema.methods.getActiveMembers = function() {

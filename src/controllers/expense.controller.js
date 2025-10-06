@@ -2,7 +2,6 @@ import { asyncHandler } from "../Utils/asyncHandler.js";
 import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import { Expense } from "../models/expense.model.js";
-import { Flatmate } from "../models/flatmate.model.js";
 import mongoose from "mongoose";
 
 // Get all expenses for a user (created by them or they are a participant)
@@ -169,9 +168,12 @@ const markParticipantPaid = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Expense not found");
     }
 
-    // Check if user is the creator of the expense
-    if (expense.createdBy.toString() !== req.user._id.toString()) {
-        throw new ApiError(403, "Only the expense creator can mark payments as paid");
+    // Allow both the creator and the participant themselves to mark as paid
+    const isCreator = expense.createdBy.toString() === req.user._id.toString();
+    const isParticipant = participantUserId === req.user._id.toString();
+
+    if (!isCreator && !isParticipant) {
+        throw new ApiError(403, "Only the expense creator or the participant can mark this payment as paid");
     }
 
     // Find and update the participant
@@ -371,32 +373,150 @@ const getExpenseStats = asyncHandler(async (req, res) => {
 // Get available flatmates for expense splitting
 const getAvailableFlatmates = asyncHandler(async (req, res) => {
     const userId = req.user._id;
+    const currentUserName = req.user.userName;
+    const currentUserEmail = req.user.email;
 
-    const flatmates = await Flatmate.find({
+    console.log('🔍 getAvailableFlatmates called by userId:', userId.toString());
+
+    // Import Flat model
+    const { Flat } = await import("../models/flat.model.js");
+
+    // Find the user's flat
+    const flat = await Flat.findOne({
+        $or: [
+            { admin: userId },
+            { 'members.userId': userId, 'members.status': 'active' }
+        ],
         status: 'active'
-    }).populate('userId', 'userName email');
+    })
+    .populate('admin', 'userName email')
+    .populate('members.userId', 'userName email');
 
-    // Include current user as well
-    const currentUser = req.user;
-    const allParticipants = [
-        {
-            _id: currentUser._id,
-            userId: {
-                _id: currentUser._id,
-                userName: currentUser.userName,
-                email: currentUser.email
-            },
-            name: currentUser.userName,
-            isCurrentUser: true
-        },
-        ...flatmates.map(flatmate => ({
-            ...flatmate.toObject(),
+    if (!flat) {
+        console.log('❌ User is not part of any active flat');
+        return res.status(200).json(
+            new ApiResponse(200, [], "You are not part of any active flat")
+        );
+    }
+
+    console.log('✅ Found flat:', flat.name, '| Admin:', flat.admin._id.toString(), '| Members:', flat.members.length);
+
+    // Get all available flatmates (admin + members + current user)
+    const availableFlatmates = [];
+
+    // Add current user first
+    console.log('  → Current User:', currentUserName, '| ID:', userId.toString());
+    availableFlatmates.push({
+        _id: userId,
+        name: currentUserName,
+        userName: currentUserName,
+        email: currentUserEmail,
+        role: flat.admin._id.toString() === userId.toString() ? 'admin' : 'member',
+        isCurrentUser: true
+    });
+
+    // Add admin if admin is not the current user
+    if (flat.admin._id.toString() !== userId.toString()) {
+        console.log('  → Admin:', flat.admin.userName, '| ID:', flat.admin._id.toString());
+        
+        availableFlatmates.push({
+            _id: flat.admin._id,
+            name: flat.admin.userName,
+            userName: flat.admin.userName,
+            email: flat.admin.email,
+            role: 'admin',
             isCurrentUser: false
-        }))
-    ];
+        });
+    }
+
+    // Add active members, excluding the current user AND the admin (to avoid duplicates)
+    flat.members
+        .filter(member => {
+            const isCurrentUser = member.userId._id.toString() === userId.toString();
+            const isAdmin = member.userId._id.toString() === flat.admin._id.toString();
+            const isActive = member.status === 'active';
+            return isActive && !isCurrentUser && !isAdmin; // Exclude current user AND admin
+        })
+        .forEach(member => {
+            console.log('  → Member:', member.userId.userName, '| ID:', member.userId._id.toString());
+            
+            availableFlatmates.push({
+                _id: member.userId._id,
+                name: member.userId.userName,
+                userName: member.userId.userName,
+                email: member.userId.email,
+                role: member.role,
+                isCurrentUser: false
+            });
+        });
+
+    console.log('📤 Returning', availableFlatmates.length, 'available flatmates (including current user)');
 
     return res.status(200).json(
-        new ApiResponse(200, allParticipants, "Available flatmates fetched successfully")
+        new ApiResponse(200, availableFlatmates, "Available flatmates fetched successfully")
+    );
+});
+
+// Get all flat expenses (all expenses involving any flat member)
+const getFlatExpenses = asyncHandler(async (req, res) => {
+    const { status, category } = req.query;
+    const userId = req.user._id;
+
+    console.log('🔍 getFlatExpenses called by userId:', userId.toString());
+
+    // First, find the user's flat and get all member IDs
+    const { Flat } = await import("../models/flat.model.js");
+    
+    const flat = await Flat.findOne({
+        $or: [
+            { admin: userId },
+            { 'members.userId': userId, 'members.status': 'active' }
+        ],
+        status: 'active'
+    });
+
+    if (!flat) {
+        console.log('❌ User is not part of any active flat');
+        throw new ApiError(404, "You are not part of any active flat");
+    }
+
+    console.log('✅ Found flat:', flat._id, 'Name:', flat.name);
+
+    // Get all active member IDs from the flat
+    const memberIds = flat.members
+        .filter(member => member.status === 'active')
+        .map(member => member.userId);
+
+    console.log('📋 Active member IDs:', memberIds.map(id => id.toString()));
+
+    // Build filter to get all expenses involving any flat member
+    const filter = {
+        $or: [
+            { createdBy: { $in: memberIds } },
+            { "participants.userId": { $in: memberIds } }
+        ]
+    };
+
+    if (status) filter.status = status;
+    if (category) filter.category = category;
+
+    console.log('🔎 Searching for expenses with filter:', JSON.stringify(filter, null, 2));
+
+    const expenses = await Expense.find(filter)
+        .populate('createdBy', 'userName email')
+        .populate('participants.userId', 'userName email')
+        .sort({ createdAt: -1 });
+
+    console.log('✅ Found', expenses.length, 'expenses');
+    expenses.forEach(exp => {
+        console.log('  - Expense:', exp.title, '| Creator:', exp.createdBy?.userName, '| Participants:', exp.participants?.length);
+        exp.participants?.forEach(p => {
+            console.log('    → Participant:', p.userId?.userName || 'Unknown', '| ID:', p.userId?._id?.toString() || p.userId?.toString() || 'NO ID', '| Amount:', p.amount);
+        });
+    });
+
+    return res.status(200).json(
+        new ApiResponse(200, expenses, "Flat expenses fetched successfully")
     );
 });
 
@@ -409,5 +529,6 @@ export {
     updateExpense,
     deleteExpense,
     getExpenseStats,
-    getAvailableFlatmates
+    getAvailableFlatmates,
+    getFlatExpenses
 };

@@ -7,8 +7,8 @@ export const verifyJWT = asyncHandler(async(req, _, next) => {
     try {
         const token = req.cookies?.accessToken || req.header("Authorization")?.replace("Bearer ", "")
         
-        // console.log(token);
         if (!token) {
+            console.log("❌ No token provided");
             throw new ApiError(401, "Unauthorized request")
         }
     
@@ -17,13 +17,22 @@ export const verifyJWT = asyncHandler(async(req, _, next) => {
         const user = await User.findById(decodedToken?._id).select("-password -refreshToken")
     
         if (!user) {
-            
+            console.log("❌ User not found for token");
             throw new ApiError(401, "Invalid Access Token")
         }
     
         req.user = user;
         next()
     } catch (error) {
+        if (error.name === 'TokenExpiredError') {
+            console.log("❌ Token has expired");
+            throw new ApiError(401, "Access token has expired. Please login again.")
+        }
+        if (error.name === 'JsonWebTokenError') {
+            console.log("❌ Invalid token format");
+            throw new ApiError(401, "Invalid access token")
+        }
+        console.log("❌ Auth error:", error.message);
         throw new ApiError(401, error?.message || "Invalid access token")
     }
     
