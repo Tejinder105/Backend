@@ -8,10 +8,32 @@ const flatSchema = new Schema({
     maxlength: 100
   },
   
+  address: {
+    street: { type: String, trim: true },
+    city: { type: String, trim: true },
+    state: { type: String, trim: true },
+    zipCode: { type: String, trim: true },
+    country: { type: String, trim: true, default: 'India' }
+  },
+  
   // Monthly rent amount
   rent: {
     type: Number,
     required: true,
+    min: 0
+  },
+  
+  // Currency
+  currency: {
+    type: String,
+    default: 'INR',
+    uppercase: true
+  },
+  
+  // Monthly budget
+  monthlyBudget: {
+    type: Number,
+    default: 0,
     min: 0
   },
   
@@ -93,12 +115,11 @@ const flatSchema = new Schema({
   }
 });
 
-// Indexes for better performance
 flatSchema.index({ admin: 1 });
 flatSchema.index({ 'members.userId': 1 });
 flatSchema.index({ status: 1 });
 
-// Methods
+
 flatSchema.methods.generateJoinCode = function() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
@@ -134,7 +155,6 @@ flatSchema.methods.addMember = function(userId, role = 'co_tenant', monthlyContr
 };
 
 flatSchema.methods.removeMember = function(userId) {
-  // Cannot remove admin
   if (this.admin.toString() === userId.toString()) {
     throw new Error('Cannot remove flat admin');
   }
@@ -144,7 +164,6 @@ flatSchema.methods.removeMember = function(userId) {
     member.userId.toString() !== userId.toString()
   );
   
-  // Update stats
   this.stats.totalMembers = this.members.filter(m => m.status === 'active').length;
   this.updatedAt = new Date();
   
@@ -172,7 +191,6 @@ flatSchema.methods.isAdmin = function(userId) {
 
 flatSchema.methods.isMember = function(userId) {
   return this.members.some(member => {
-    // Handle both populated and non-populated userId
     const memberId = member.userId._id ? member.userId._id.toString() : member.userId.toString();
     return memberId === userId.toString() && member.status === 'active';
   });
@@ -180,7 +198,6 @@ flatSchema.methods.isMember = function(userId) {
 
 flatSchema.methods.getMember = function(userId) {
   return this.members.find(member => {
-    // Handle both populated and non-populated userId
     const memberId = member.userId._id ? member.userId._id.toString() : member.userId.toString();
     return memberId === userId.toString();
   });
@@ -190,7 +207,7 @@ flatSchema.methods.getActiveMembers = function() {
   return this.members.filter(member => member.status === 'active');
 };
 
-// Static methods
+
 flatSchema.statics.generateUniqueJoinCode = async function() {
   let code;
   let attempts = 0;
@@ -231,9 +248,7 @@ flatSchema.statics.findUserFlats = function(userId) {
   .sort({ createdAt: -1 });
 };
 
-// Pre-save middleware
 flatSchema.pre('save', function(next) {
-  // Generate join code if not exists
   if (this.isNew && !this.joinCode) {
     this.constructor.generateUniqueJoinCode()
       .then(code => {
@@ -242,13 +257,11 @@ flatSchema.pre('save', function(next) {
       })
       .catch(next);
   } else {
-    // Update timestamp
     this.updatedAt = new Date();
     next();
   }
 });
 
-// Update stats before saving
 flatSchema.pre('save', function(next) {
   if (this.isModified('members')) {
     this.stats.totalMembers = this.members.filter(m => m.status === 'active').length;

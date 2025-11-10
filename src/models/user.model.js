@@ -18,9 +18,18 @@ const userSchema = new Schema(
             lowercase: true,
             trim: true, 
         },
+        phone: {
+            type: String,
+            trim: true,
+            default: null
+        },
         password: {
             type: String,
             required: [true, 'Password is required']
+        },
+        avatarUrl: {
+            type: String,
+            default: null
         },
         refreshToken: {
             type: String

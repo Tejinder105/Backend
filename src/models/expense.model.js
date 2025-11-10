@@ -75,7 +75,6 @@ const expenseSchema = new Schema(
     }
 );
 
-// Index for efficient queries
 expenseSchema.index({ createdBy: 1, status: 1 });
 expenseSchema.index({ "participants.userId": 1 });
 expenseSchema.index({ category: 1 });

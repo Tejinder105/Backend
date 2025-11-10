@@ -2,14 +2,14 @@ import { asyncHandler } from "../Utils/asyncHandler.js";
 import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import { Expense } from "../models/expense.model.js";
+import { notifyExpenseCreated } from "../services/notification.service.js";
 import mongoose from "mongoose";
 
-// Get all expenses for a user (created by them or they are a participant)
 const getUserExpenses = asyncHandler(async (req, res) => {
     const { status, category } = req.query;
     const userId = req.user._id;
 
-    // Build filter object
+
     const filter = {
         $or: [
             { createdBy: userId },
@@ -30,7 +30,6 @@ const getUserExpenses = asyncHandler(async (req, res) => {
     );
 });
 
-// Get expenses created by the user
 const getCreatedExpenses = asyncHandler(async (req, res) => {
     const { status, category } = req.query;
     const userId = req.user._id;
@@ -48,7 +47,6 @@ const getCreatedExpenses = asyncHandler(async (req, res) => {
     );
 });
 
-// Get expenses where user is a participant
 const getParticipantExpenses = asyncHandler(async (req, res) => {
     const { status, category } = req.query;
     const userId = req.user._id;
@@ -71,7 +69,6 @@ const getParticipantExpenses = asyncHandler(async (req, res) => {
     );
 });
 
-// Create a new split expense
 const createSplitExpense = asyncHandler(async (req, res) => {
     const {
         title,
@@ -83,7 +80,6 @@ const createSplitExpense = asyncHandler(async (req, res) => {
         notes
     } = req.body;
 
-    // Validation
     if (!title || !description || !totalAmount || !category || !participants) {
         throw new ApiError(400, "All required fields must be provided");
     }
@@ -96,7 +92,6 @@ const createSplitExpense = asyncHandler(async (req, res) => {
         throw new ApiError(400, "At least one participant is required");
     }
 
-    // Validate participants
     const validParticipants = [];
     let calculatedTotal = 0;
 
@@ -125,7 +120,6 @@ const createSplitExpense = asyncHandler(async (req, res) => {
         calculatedTotal += amount;
     }
 
-    // Validate total for custom split
     if (splitMethod === 'custom' && Math.abs(calculatedTotal - totalAmount) > 0.01) {
         throw new ApiError(400, "Custom amounts must sum up to total amount");
     }
@@ -145,12 +139,23 @@ const createSplitExpense = asyncHandler(async (req, res) => {
         .populate('createdBy', 'userName email')
         .populate('participants.userId', 'userName email');
 
+    // Send notifications to all participants (except creator)
+    try {
+        console.log('💬 Attempting to send expense notifications...');
+        console.log('Creator:', req.user.userName);
+        console.log('Participants:', populatedExpense.participants.length);
+        await notifyExpenseCreated(populatedExpense, req.user.userName);
+        console.log('✅ Expense notifications sent successfully');
+    } catch (notifError) {
+        console.error('❌ Failed to send expense notifications:', notifError);
+        // Don't fail the request if notifications fail
+    }
+
     return res.status(201).json(
         new ApiResponse(201, populatedExpense, "Split expense created successfully")
     );
 });
 
-// Mark participant payment as paid
 const markParticipantPaid = asyncHandler(async (req, res) => {
     const { expenseId, participantUserId } = req.params;
 
@@ -168,7 +173,6 @@ const markParticipantPaid = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Expense not found");
     }
 
-    // Allow both the creator and the participant themselves to mark as paid
     const isCreator = expense.createdBy.toString() === req.user._id.toString();
     const isParticipant = participantUserId === req.user._id.toString();
 
@@ -176,7 +180,6 @@ const markParticipantPaid = asyncHandler(async (req, res) => {
         throw new ApiError(403, "Only the expense creator or the participant can mark this payment as paid");
     }
 
-    // Find and update the participant
     const participant = expense.participants.find(p => 
         p.userId.toString() === participantUserId
     );
@@ -192,7 +195,6 @@ const markParticipantPaid = asyncHandler(async (req, res) => {
     participant.isPaid = true;
     participant.paidAt = new Date();
 
-    // Check if all participants have paid
     const allPaid = expense.participants.every(p => p.isPaid);
     if (allPaid) {
         expense.status = 'settled';
@@ -210,7 +212,6 @@ const markParticipantPaid = asyncHandler(async (req, res) => {
     );
 });
 
-// Update expense
 const updateExpense = asyncHandler(async (req, res) => {
     const { expenseId } = req.params;
     const updates = req.body;
@@ -229,17 +230,14 @@ const updateExpense = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Expense not found");
     }
 
-    // Check if user is the creator of the expense
     if (expense.createdBy.toString() !== req.user._id.toString()) {
         throw new ApiError(403, "Only the expense creator can update the expense");
     }
 
-    // Prevent updating if expense is settled
     if (expense.status === 'settled') {
         throw new ApiError(400, "Cannot update settled expenses");
     }
 
-    // Prevent updating certain fields if any participant has paid
     const anyPaid = expense.participants.some(p => p.isPaid);
     if (anyPaid && (updates.totalAmount || updates.participants)) {
         throw new ApiError(400, "Cannot update amount or participants after payments have been made");
@@ -257,7 +255,6 @@ const updateExpense = asyncHandler(async (req, res) => {
     );
 });
 
-// Delete expense
 const deleteExpense = asyncHandler(async (req, res) => {
     const { expenseId } = req.params;
 
@@ -275,12 +272,10 @@ const deleteExpense = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Expense not found");
     }
 
-    // Check if user is the creator of the expense
     if (expense.createdBy.toString() !== req.user._id.toString()) {
         throw new ApiError(403, "Only the expense creator can delete the expense");
     }
 
-    // Prevent deletion if any participant has paid
     const anyPaid = expense.participants.some(p => p.isPaid);
     if (anyPaid) {
         throw new ApiError(400, "Cannot delete expense after payments have been made");
@@ -293,11 +288,9 @@ const deleteExpense = asyncHandler(async (req, res) => {
     );
 });
 
-// Get expense statistics
 const getExpenseStats = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
-    // Stats for expenses created by user
     const createdStats = await Expense.aggregate([
         {
             $match: { createdBy: new mongoose.Types.ObjectId(userId) }
@@ -321,7 +314,6 @@ const getExpenseStats = asyncHandler(async (req, res) => {
         }
     ]);
 
-    // Stats for expenses where user is a participant
     const participantStats = await Expense.aggregate([
         {
             $match: { "participants.userId": new mongoose.Types.ObjectId(userId) }
@@ -370,7 +362,6 @@ const getExpenseStats = asyncHandler(async (req, res) => {
     );
 });
 
-// Get available flatmates for expense splitting
 const getAvailableFlatmates = asyncHandler(async (req, res) => {
     const userId = req.user._id;
     const currentUserName = req.user.userName;
@@ -378,10 +369,8 @@ const getAvailableFlatmates = asyncHandler(async (req, res) => {
 
     console.log('🔍 getAvailableFlatmates called by userId:', userId.toString());
 
-    // Import Flat model
     const { Flat } = await import("../models/flat.model.js");
 
-    // Find the user's flat
     const flat = await Flat.findOne({
         $or: [
             { admin: userId },
@@ -401,10 +390,8 @@ const getAvailableFlatmates = asyncHandler(async (req, res) => {
 
     console.log('✅ Found flat:', flat.name, '| Admin:', flat.admin._id.toString(), '| Members:', flat.members.length);
 
-    // Get all available flatmates (admin + members + current user)
     const availableFlatmates = [];
 
-    // Add current user first
     console.log('  → Current User:', currentUserName, '| ID:', userId.toString());
     availableFlatmates.push({
         _id: userId,
@@ -415,7 +402,6 @@ const getAvailableFlatmates = asyncHandler(async (req, res) => {
         isCurrentUser: true
     });
 
-    // Add admin if admin is not the current user
     if (flat.admin._id.toString() !== userId.toString()) {
         console.log('  → Admin:', flat.admin.userName, '| ID:', flat.admin._id.toString());
         
@@ -429,7 +415,6 @@ const getAvailableFlatmates = asyncHandler(async (req, res) => {
         });
     }
 
-    // Add active members, excluding the current user AND the admin (to avoid duplicates)
     flat.members
         .filter(member => {
             const isCurrentUser = member.userId._id.toString() === userId.toString();
@@ -457,14 +442,12 @@ const getAvailableFlatmates = asyncHandler(async (req, res) => {
     );
 });
 
-// Get all flat expenses (all expenses involving any flat member)
 const getFlatExpenses = asyncHandler(async (req, res) => {
     const { status, category } = req.query;
     const userId = req.user._id;
 
     console.log('🔍 getFlatExpenses called by userId:', userId.toString());
 
-    // First, find the user's flat and get all member IDs
     const { Flat } = await import("../models/flat.model.js");
     
     const flat = await Flat.findOne({
@@ -482,14 +465,12 @@ const getFlatExpenses = asyncHandler(async (req, res) => {
 
     console.log('✅ Found flat:', flat._id, 'Name:', flat.name);
 
-    // Get all active member IDs from the flat
     const memberIds = flat.members
         .filter(member => member.status === 'active')
         .map(member => member.userId);
 
     console.log('📋 Active member IDs:', memberIds.map(id => id.toString()));
 
-    // Build filter to get all expenses involving any flat member
     const filter = {
         $or: [
             { createdBy: { $in: memberIds } },

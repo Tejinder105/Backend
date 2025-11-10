@@ -59,7 +59,6 @@ const createFlat = asyncHandler(async (req, res) => {
     ],
   });
 
-  // Populate the flat with user details
   const populatedFlat = await Flat.findById(flat._id)
     .populate("admin", "userName email")
     .populate("members.userId", "userName email");
@@ -129,7 +128,6 @@ const getUserFlat = asyncHandler(async (req, res) => {
 
   console.log("🔍 getUserFlat called for userId:", userId);
 
-  // Find user's active flat
   const flat = await Flat.findOne({
     $or: [
       { admin: userId },
@@ -158,7 +156,6 @@ const getUserFlat = asyncHandler(async (req, res) => {
     }))
   );
 
-  // Add user's role and contribution to response
   const userMember = flat.getMember(userId);
   const flatData = {
     ...flat.toObject(),
@@ -173,7 +170,6 @@ const getUserFlat = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, flatData, "Flat details fetched successfully"));
 });
 
-// Get flat by join code (public endpoint for preview)
 const getFlatByJoinCode = asyncHandler(async (req, res) => {
   const { joinCode } = req.params;
 
@@ -189,7 +185,6 @@ const getFlatByJoinCode = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Invalid join code");
   }
 
-  // Return basic flat info (no sensitive data)
   const flatInfo = {
     name: flat.name,
     adminName: flat.admin?.userName,
@@ -205,7 +200,6 @@ const getFlatByJoinCode = asyncHandler(async (req, res) => {
     );
 });
 
-// Update flat details (admin only)
 const updateFlat = asyncHandler(async (req, res) => {
   const { flatId } = req.params;
   const { name, address, settings } = req.body;
@@ -221,12 +215,10 @@ const updateFlat = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Flat not found");
   }
 
-  // Check if user is admin
   if (!flat.isAdmin(userId)) {
     throw new ApiError(403, "Only flat admin can update flat details");
   }
 
-  // Update flat details
   if (name) flat.name = name.trim();
   if (address) flat.address = { ...flat.address, ...address };
   if (settings) flat.settings = { ...flat.settings, ...settings };
@@ -257,12 +249,10 @@ const leaveFlat = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Flat not found");
   }
 
-  // Check if user is a member
   if (!flat.isMember(userId)) {
     throw new ApiError(400, "You are not a member of this flat");
   }
 
-  // Admin cannot leave flat (must transfer admin first)
   if (flat.isAdmin(userId)) {
     throw new ApiError(
       400,
@@ -270,7 +260,6 @@ const leaveFlat = asyncHandler(async (req, res) => {
     );
   }
 
-  // Remove user from flat
   await flat.removeMember(userId);
 
   return res
@@ -278,7 +267,6 @@ const leaveFlat = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, {}, "Successfully left the flat"));
 });
 
-// Delete flat (admin only)
 const deleteFlat = asyncHandler(async (req, res) => {
   const { flatId } = req.params;
   const userId = req.user._id;
@@ -293,12 +281,10 @@ const deleteFlat = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Flat not found");
   }
 
-  // Check if user is admin
   if (!flat.isAdmin(userId)) {
     throw new ApiError(403, "Only flat admin can delete the flat");
   }
 
-  // Mark as archived instead of deleting
   flat.status = "archived";
   await flat.save();
 
@@ -307,7 +293,6 @@ const deleteFlat = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, {}, "Flat deleted successfully"));
 });
 
-// Get flat members (for admin)
 const getFlatMembers = asyncHandler(async (req, res) => {
   const { flatId } = req.params;
   const userId = req.user._id;
@@ -369,6 +354,163 @@ const getFlatMembers = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, members, "Flat members fetched successfully"));
 });
 
+// Generate invite link
+const generateInviteLink = asyncHandler(async (req, res) => {
+  const { flatId } = req.params;
+  const userId = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(flatId)) {
+    throw new ApiError(400, "Invalid flat ID");
+  }
+
+  const flat = await Flat.findById(flatId);
+
+  if (!flat) {
+    throw new ApiError(404, "Flat not found");
+  }
+
+  if (!flat.isAdmin(userId)) {
+    throw new ApiError(403, "Only flat admin can generate invite link");
+  }
+
+  const baseUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+  const inviteLink = `${baseUrl}/join-flat?code=${flat.joinCode}`;
+
+  return res.status(200).json(
+    new ApiResponse(200, {
+      joinCode: flat.joinCode,
+      inviteLink,
+      flatName: flat.name
+    }, "Invite link generated successfully")
+  );
+});
+
+// Remove member (admin only)
+const removeMember = asyncHandler(async (req, res) => {
+  const { flatId, memberId } = req.params;
+  const userId = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(flatId) || !mongoose.Types.ObjectId.isValid(memberId)) {
+    throw new ApiError(400, "Invalid flat ID or member ID");
+  }
+
+  const flat = await Flat.findById(flatId);
+
+  if (!flat) {
+    throw new ApiError(404, "Flat not found");
+  }
+
+  if (!flat.isAdmin(userId)) {
+    throw new ApiError(403, "Only flat admin can remove members");
+  }
+
+  if (flat.admin.toString() === memberId) {
+    throw new ApiError(400, "Cannot remove flat admin");
+  }
+
+  await flat.removeMember(memberId);
+
+  const updatedFlat = await Flat.findById(flat._id)
+    .populate("admin", "userName email")
+    .populate("members.userId", "userName email");
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, updatedFlat, "Member removed successfully"));
+});
+
+// Transfer admin rights
+const transferAdmin = asyncHandler(async (req, res) => {
+  const { flatId } = req.params;
+  const { newAdminId } = req.body;
+  const userId = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(flatId) || !mongoose.Types.ObjectId.isValid(newAdminId)) {
+    throw new ApiError(400, "Invalid flat ID or user ID");
+  }
+
+  const flat = await Flat.findById(flatId);
+
+  if (!flat) {
+    throw new ApiError(404, "Flat not found");
+  }
+
+  if (!flat.isAdmin(userId)) {
+    throw new ApiError(403, "Only flat admin can transfer admin rights");
+  }
+
+  if (!flat.isMember(newAdminId) && flat.admin.toString() !== newAdminId) {
+    throw new ApiError(400, "New admin must be a member of the flat");
+  }
+
+  // Update old admin to member
+  const oldAdminMember = flat.getMember(userId);
+  if (oldAdminMember) {
+    oldAdminMember.role = 'co_tenant';
+  } else {
+    // Add old admin as member if not already
+    flat.members.push({
+      userId: userId,
+      role: 'co_tenant',
+      joinedAt: new Date(),
+      status: 'active',
+      monthlyContribution: 0
+    });
+  }
+
+  // Update new admin
+  const newAdminMember = flat.getMember(newAdminId);
+  if (newAdminMember) {
+    newAdminMember.role = 'admin';
+  }
+
+  flat.admin = newAdminId;
+  await flat.save();
+
+  const updatedFlat = await Flat.findById(flat._id)
+    .populate("admin", "userName email")
+    .populate("members.userId", "userName email");
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, updatedFlat, "Admin rights transferred successfully"));
+});
+
+// Update member role
+const updateMemberRole = asyncHandler(async (req, res) => {
+  const { flatId, memberId } = req.params;
+  const { role } = req.body;
+  const userId = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(flatId) || !mongoose.Types.ObjectId.isValid(memberId)) {
+    throw new ApiError(400, "Invalid flat ID or member ID");
+  }
+
+  const flat = await Flat.findById(flatId);
+
+  if (!flat) {
+    throw new ApiError(404, "Flat not found");
+  }
+
+  if (!flat.isAdmin(userId)) {
+    throw new ApiError(403, "Only flat admin can update member roles");
+  }
+
+  if (!['co_tenant', 'subtenant', 'guest'].includes(role)) {
+    throw new ApiError(400, "Invalid role");
+  }
+
+  await flat.updateMemberRole(memberId, role);
+
+  const updatedFlat = await Flat.findById(flat._id)
+    .populate("admin", "userName email")
+    .populate("members.userId", "userName email");
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, updatedFlat, "Member role updated successfully"));
+});
+
 export {
   createFlat,
   joinFlat,
@@ -378,4 +520,8 @@ export {
   leaveFlat,
   deleteFlat,
   getFlatMembers,
+  generateInviteLink,
+  removeMember,
+  transferAdmin,
+  updateMemberRole
 };

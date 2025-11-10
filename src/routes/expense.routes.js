@@ -15,10 +15,8 @@ import { verifyJWT } from "../middleware/auth.middleware.js";
 
 const router = Router();
 
-// Apply authentication middleware to all routes
 router.use(verifyJWT);
 
-// Expense routes
 router.route("/").get(getUserExpenses).post(createSplitExpense);
 router.route("/created").get(getCreatedExpenses);
 router.route("/participant").get(getParticipantExpenses);

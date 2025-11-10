@@ -7,19 +7,16 @@ import { connectDB } from "../db/index.js";
 
 const seedData = async () => {
     try {
-        // Connect to database
-        await connectDB();
+               await connectDB();
 
-        // Clear existing data
-        await User.deleteMany({});
+               await User.deleteMany({});
         await Payment.deleteMany({});
         await Expense.deleteMany({});
         await Flatmate.deleteMany({});
 
         console.log("Cleared existing data");
 
-        // Create sample users
-        const users = await User.create([
+              const users = await User.create([
             {
                 userName: "john_doe",
                 email: "john@example.com",

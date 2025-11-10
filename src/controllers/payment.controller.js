@@ -4,12 +4,10 @@ import { ApiResponse } from "../Utils/ApiResponse.js";
 import { Payment } from "../models/payment.model.js";
 import mongoose from "mongoose";
 
-// Get all payments for a user
 const getUserPayments = asyncHandler(async (req, res) => {
     const { status, type } = req.query;
     const userId = req.user._id;
 
-    // Build filter object
     const filter = { userId };
     if (status) filter.status = status;
     if (type) filter.type = type;
@@ -22,7 +20,6 @@ const getUserPayments = asyncHandler(async (req, res) => {
     );
 });
 
-// Get outstanding dues (pending payments)
 const getOutstandingDues = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
@@ -36,7 +33,6 @@ const getOutstandingDues = asyncHandler(async (req, res) => {
     );
 });
 
-// Create a new payment/due
 const createPayment = asyncHandler(async (req, res) => {
     const {
         title,
@@ -48,7 +44,6 @@ const createPayment = asyncHandler(async (req, res) => {
         notes
     } = req.body;
 
-    // Validation
     if (!title || !amount || !recipient || !dueDate || !type) {
         throw new ApiError(400, "All required fields must be provided");
     }
@@ -73,7 +68,6 @@ const createPayment = asyncHandler(async (req, res) => {
     );
 });
 
-// Process payment (mark as paid)
 const processPayment = asyncHandler(async (req, res) => {
     const { paymentId } = req.params;
     const { paymentMethod, transactionId, processingFee = 0 } = req.body;
@@ -99,7 +93,6 @@ const processPayment = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Payment is already processed");
     }
 
-    // Update payment status
     payment.status = 'paid';
     payment.paymentMethod = paymentMethod;
     payment.transactionId = transactionId;
@@ -113,7 +106,6 @@ const processPayment = asyncHandler(async (req, res) => {
     );
 });
 
-// Update payment
 const updatePayment = asyncHandler(async (req, res) => {
     const { paymentId } = req.params;
     const updates = req.body;
@@ -135,7 +127,6 @@ const updatePayment = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Payment not found");
     }
 
-    // Prevent updating certain fields if payment is already processed
     if (payment.status === 'paid' && (updates.amount || updates.recipient)) {
         throw new ApiError(400, "Cannot update amount or recipient for processed payments");
     }
@@ -151,7 +142,6 @@ const updatePayment = asyncHandler(async (req, res) => {
     );
 });
 
-// Delete payment
 const deletePayment = asyncHandler(async (req, res) => {
     const { paymentId } = req.params;
 
@@ -183,7 +173,6 @@ const deletePayment = asyncHandler(async (req, res) => {
     );
 });
 
-// Get payment statistics
 const getPaymentStats = asyncHandler(async (req, res) => {
     const userId = req.user._id;
 
