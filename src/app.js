@@ -23,7 +23,6 @@ import notificationRouter from "./routes/notification.routes.js";
 import reportRouter from "./routes/report.routes.js";
 import expenseRouter from "./routes/expense.routes.js";
 import paymentRouter from "./routes/payment.routes.js";
-import budgetRouter from "./routes/budget.routes.js";
 
 // Register routes
 app.use("/api/auth", authRouter);
@@ -32,7 +31,6 @@ app.use("/api/bills", billRouter);
 app.use("/api/transactions", transactionRouter);
 app.use("/api/notifications", notificationRouter);
 app.use("/api/reports", reportRouter);
-app.use("/api/budget", budgetRouter);
 
 // Legacy routes (kept for backward compatibility)
 app.use("/api/v1/expenses", expenseRouter);

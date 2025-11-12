@@ -298,19 +298,36 @@ export const scanBill = asyncHandler(async (req, res) => {
     }
 
     try {
-        // Upload image to Cloudinary
-        const imageUrl = await uploadBillImage(req.file.path);
+        let imageUrl = null;
+        
+        // Try to upload to Cloudinary if configured, but don't fail if not
+        try {
+            if (process.env.CLOUDINARY_CLOUD_NAME && 
+                process.env.CLOUDINARY_API_KEY && 
+                process.env.CLOUDINARY_API_SECRET) {
+                imageUrl = await uploadBillImage(req.file.path);
+                console.log('✅ Image uploaded to Cloudinary:', imageUrl);
+            } else {
+                console.log('⚠️ Cloudinary not configured, skipping upload');
+            }
+        } catch (cloudinaryError) {
+            console.error('⚠️ Cloudinary upload failed:', cloudinaryError.message);
+            // Continue without cloudinary URL
+        }
 
-        // Process image with OCR
+        // Process image with OCR (this is the important part)
+        console.log('🔍 Processing image with OCR:', req.file.path);
         const ocrResult = await processBillImage(req.file.path);
+        console.log('✅ OCR processing complete:', ocrResult);
 
         return res.status(200).json(
             new ApiResponse(200, {
-                imageUrl,
+                imageUrl: imageUrl || null,
                 ...ocrResult
             }, "Bill scanned successfully")
         );
     } catch (error) {
+        console.error('❌ Bill scan failed:', error);
         throw new ApiError(500, `Bill scan failed: ${error.message}`);
     }
 });

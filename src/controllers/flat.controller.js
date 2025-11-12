@@ -202,8 +202,10 @@ const getFlatByJoinCode = asyncHandler(async (req, res) => {
 
 const updateFlat = asyncHandler(async (req, res) => {
   const { flatId } = req.params;
-  const { name, address, settings } = req.body;
+  const { name, address, settings, monthlyBudget, rent } = req.body;
   const userId = req.user._id;
+
+  console.log('📝 updateFlat called with:', { flatId, name, address, settings, monthlyBudget, rent });
 
   if (!mongoose.Types.ObjectId.isValid(flatId)) {
     throw new ApiError(400, "Invalid flat ID");
@@ -219,15 +221,20 @@ const updateFlat = asyncHandler(async (req, res) => {
     throw new ApiError(403, "Only flat admin can update flat details");
   }
 
+  // Update fields if provided
   if (name) flat.name = name.trim();
   if (address) flat.address = { ...flat.address, ...address };
   if (settings) flat.settings = { ...flat.settings, ...settings };
+  if (monthlyBudget !== undefined) flat.monthlyBudget = Number(monthlyBudget);
+  if (rent !== undefined) flat.rent = Number(rent);
 
   await flat.save();
 
   const updatedFlat = await Flat.findById(flat._id)
     .populate("admin", "userName email")
     .populate("members.userId", "userName email");
+
+  console.log('✅ Flat updated successfully:', updatedFlat.monthlyBudget);
 
   return res
     .status(200)

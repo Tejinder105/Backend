@@ -47,6 +47,8 @@ export const updateFlatSchema = Joi.object({
         zipCode: Joi.string().optional().allow(null, ''),
         country: Joi.string().optional()
     }).optional(),
+    rent: Joi.number().min(0).optional(),
+    settings: Joi.object().optional(),
     monthlyBudget: Joi.number().min(0).optional()
 });
 
