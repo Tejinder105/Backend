@@ -10,6 +10,7 @@ import { notifyBillCreated } from "../services/notification.service.js";
 import mongoose from "mongoose";
 import multer from "multer";
 import path from "path";
+import fs from "fs/promises";
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -300,34 +301,56 @@ export const scanBill = asyncHandler(async (req, res) => {
     try {
         let imageUrl = null;
         
-        // Try to upload to Cloudinary if configured, but don't fail if not
+        // Try to upload to Cloudinary if configured
         try {
             if (process.env.CLOUDINARY_CLOUD_NAME && 
                 process.env.CLOUDINARY_API_KEY && 
                 process.env.CLOUDINARY_API_SECRET) {
                 imageUrl = await uploadBillImage(req.file.path);
-                console.log('✅ Image uploaded to Cloudinary:', imageUrl);
-            } else {
-                console.log('⚠️ Cloudinary not configured, skipping upload');
             }
         } catch (cloudinaryError) {
-            console.error('⚠️ Cloudinary upload failed:', cloudinaryError.message);
-            // Continue without cloudinary URL
+            console.error('Cloudinary upload failed:', cloudinaryError.message);
         }
 
-        // Process image with OCR (this is the important part)
-        console.log('🔍 Processing image with OCR:', req.file.path);
+        // Process image with OCR
         const ocrResult = await processBillImage(req.file.path);
-        console.log('✅ OCR processing complete:', ocrResult);
 
+        // Cleanup uploaded file
+        try {
+            await fs.unlink(req.file.path);
+        } catch (err) {
+            // Ignore cleanup errors
+        }
+
+        if (!ocrResult.success) {
+            throw new ApiError(400, ocrResult.error || 'OCR processing failed');
+        }
+
+        // Return structured response
         return res.status(200).json(
             new ApiResponse(200, {
                 imageUrl: imageUrl || null,
-                ...ocrResult
+                confidence: ocrResult.confidence,
+                vendor: ocrResult.parsedData?.vendor,
+                date: ocrResult.parsedData?.date,
+                invoiceNumber: ocrResult.parsedData?.invoiceNumber,
+                subtotal: ocrResult.parsedData?.subtotal,
+                tax: ocrResult.parsedData?.tax,
+                total: ocrResult.parsedData?.total,
+                items: ocrResult.parsedData?.items || [],
+                category: ocrResult.parsedData?.category || 'other',
+                rawText: ocrResult.rawText
             }, "Bill scanned successfully")
         );
     } catch (error) {
-        console.error('❌ Bill scan failed:', error);
+        // Cleanup uploaded file on error
+        try {
+            await fs.unlink(req.file.path);
+        } catch (err) {
+            // Ignore cleanup errors
+        }
+        
+        console.error('Bill scan failed:', error.message);
         throw new ApiError(500, `Bill scan failed: ${error.message}`);
     }
 });

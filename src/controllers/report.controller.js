@@ -7,6 +7,7 @@ import { BillSplit } from "../models/billSplit.model.js";
 import { Transaction } from "../models/transaction.model.js";
 import { BudgetSnapshot } from "../models/budgetSnapshot.model.js";
 import mongoose from "mongoose";
+import mlService from "../services/ml.service.js";
 
 // Get monthly report
 export const getMonthlyReport = asyncHandler(async (req, res) => {
@@ -132,7 +133,7 @@ export const setFlatBudget = asyncHandler(async (req, res) => {
     );
 });
 
-// Budget forecast using simple moving average
+// ML-powered budget forecast using Facebook Prophet
 export const forecastBudget = asyncHandler(async (req, res) => {
     const { flatId } = req.params;
     const { months = 3 } = req.query;
@@ -146,11 +147,11 @@ export const forecastBudget = asyncHandler(async (req, res) => {
         throw new ApiError(403, "You don't have access to this flat");
     }
 
-    // Get last 6 months of spending data
+    // Get historical spending data (up to 24 months for better ML accuracy)
     const historicalMonths = [];
     const currentDate = new Date();
     
-    for (let i = 0; i < 6; i++) {
+    for (let i = 1; i <= 24; i++) {  // Start from 1 to exclude current month
         const date = new Date(currentDate);
         date.setMonth(date.getMonth() - i);
         historicalMonths.push(date.toISOString().slice(0, 7));
@@ -161,14 +162,14 @@ export const forecastBudget = asyncHandler(async (req, res) => {
         month: { $in: historicalMonths }
     }).sort({ month: -1 });
 
-    // Calculate spending data
+    // Calculate spending data for each historical month
     const historicalData = [];
     
     for (const month of historicalMonths) {
         let snapshot = snapshots.find(s => s.month === month);
         
         if (!snapshot) {
-            // Calculate actual spending for this month
+            // Calculate actual spending for this month from bills
             const startDate = new Date(month + '-01');
             const endDate = new Date(startDate);
             endDate.setMonth(endDate.getMonth() + 1);
@@ -189,10 +190,10 @@ export const forecastBudget = asyncHandler(async (req, res) => {
                 }
             ]);
 
-            historicalData.push({
-                month,
-                spent: bills[0]?.total || 0
-            });
+            const spent = bills[0]?.total || 0;
+            if (spent > 0) {  // Only include months with spending data
+                historicalData.push({ month, spent });
+            }
         } else {
             historicalData.push({
                 month: snapshot.month,
@@ -201,61 +202,70 @@ export const forecastBudget = asyncHandler(async (req, res) => {
         }
     }
 
-    // Calculate moving average
-    const recentData = historicalData.slice(0, Math.min(3, historicalData.length));
-    const avgSpending = recentData.reduce((sum, data) => sum + data.spent, 0) / recentData.length;
-
-    // Calculate trend
-    let trend = 'stable';
-    if (recentData.length >= 2) {
-        const recent = recentData[0].spent;
-        const older = recentData[recentData.length - 1].spent;
-        const percentChange = ((recent - older) / older) * 100;
-        
-        if (percentChange > 10) trend = 'increasing';
-        else if (percentChange < -10) trend = 'decreasing';
+    // Need at least 2 months for ML prediction
+    if (historicalData.length < 2) {
+        throw new ApiError(400, "Insufficient historical data. Need at least 2 months of spending history.");
     }
 
-    // Generate forecasts
-    const forecasts = [];
-    for (let i = 1; i <= parseInt(months); i++) {
-        const forecastDate = new Date(currentDate);
-        forecastDate.setMonth(forecastDate.getMonth() + i);
-        const forecastMonth = forecastDate.toISOString().slice(0, 7);
-
-        // Simple forecast with trend adjustment
-        let predictedAmount = avgSpending;
-        if (trend === 'increasing') {
-            predictedAmount *= (1 + (0.05 * i)); // 5% increase per month
-        } else if (trend === 'decreasing') {
-            predictedAmount *= (1 - (0.05 * i)); // 5% decrease per month
+    // Get current month spending for over-budget detection
+    const currentMonthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const currentMonthEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    
+    const currentMonthBills = await Bill.aggregate([
+        {
+            $match: {
+                flatId: new mongoose.Types.ObjectId(flatId),
+                dueDate: { $gte: currentMonthStart, $lte: currentMonthEnd },
+                status: { $in: ['paid', 'partial'] }
+            }
+        },
+        {
+            $group: {
+                _id: null,
+                total: { $sum: '$totalAmount' }
+            }
         }
+    ]);
 
-        forecasts.push({
-            month: forecastMonth,
-            predictedAmount: Math.round(predictedAmount),
-            confidence: recentData.length >= 3 ? 'medium' : 'low'
+    const currentMonthSpent = currentMonthBills[0]?.total || 0;
+    const daysPassedInMonth = currentDate.getDate();
+    const totalDaysInMonth = currentMonthEnd.getDate();
+
+    try {
+        // Call ML service for prediction
+        const mlForecast = await mlService.getForecast({
+            historicalData,
+            currentMonthSpent,
+            daysPassedInMonth,
+            totalDaysInMonth,
+            monthlyBudget: flat.monthlyBudget || 0,
+            forecastMonths: parseInt(months)
         });
+
+        // Prepare response
+        return res.status(200).json(
+            new ApiResponse(200, {
+                currentBudget: flat.monthlyBudget,
+                currentMonthSpent,
+                currentMonthProjection: mlForecast.currentMonthProjection,
+                isLikelyOverBudget: mlForecast.isLikelyOverBudget,
+                budgetDifference: mlForecast.budgetDifference,
+                historicalData: historicalData.slice(0, 6), // Show last 6 months
+                predictions: mlForecast.predictions,
+                nextMonthPrediction: mlForecast.nextMonthPrediction,
+                averageSpending: mlForecast.averageSpending,
+                trend: mlForecast.trend,
+                confidence: mlForecast.confidence,
+                explanation: mlForecast.explanation,
+                modelInfo: mlForecast.modelInfo,
+                usedML: mlForecast.usedML !== false,
+                usedFallback: mlForecast.usedFallback || false
+            }, mlForecast.usedML ? "ML budget forecast generated successfully" : "Budget forecast generated (fallback mode)")
+        );
+    } catch (error) {
+        console.error('Forecast error:', error.message);
+        throw new ApiError(500, `Failed to generate forecast: ${error.message}`);
     }
-
-    const explanation = `Based on the last ${recentData.length} months of data, your average monthly spending is ${Math.round(avgSpending)}. The trend is ${trend}. ${
-        trend === 'increasing' 
-            ? 'Spending has been increasing, so budget accordingly.' 
-            : trend === 'decreasing'
-            ? 'Spending has been decreasing, which is good!'
-            : 'Spending has been relatively stable.'
-    }`;
-
-    return res.status(200).json(
-        new ApiResponse(200, {
-            currentBudget: flat.monthlyBudget,
-            historicalData: recentData,
-            averageSpending: Math.round(avgSpending),
-            trend,
-            forecasts,
-            explanation
-        }, "Budget forecast generated successfully")
-    );
 });
 
 // Get category-wise spending

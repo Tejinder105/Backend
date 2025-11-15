@@ -1,188 +1,449 @@
 import Tesseract from 'tesseract.js';
+import sharp from 'sharp';
+import fs from 'fs/promises';
+import path from 'path';
 
 /**
- * Extract text from image using OCR
- * @param {string} imagePath - Path to image file or URL
- * @returns {Promise<string>} - Extracted text
+ * Preprocess image for better OCR accuracy
+ * @param {string} imagePath - Path to the original image
+ * @returns {Promise<string>} - Path to preprocessed image
  */
-export const extractTextFromImage = async (imagePath) => {
+const preprocessImage = async (imagePath) => {
     try {
-        const result = await Tesseract.recognize(imagePath, 'eng', {
-            logger: info => console.log('OCR Progress:', info)
-        });
-
-        return result.data.text;
+        const preprocessedPath = imagePath.replace(/(\.\w+)$/, '_processed$1');
+        
+        await sharp(imagePath)
+            .greyscale() // Convert to grayscale
+            .normalize() // Normalize contrast
+            .sharpen() // Sharpen edges
+            .threshold(128) // Binary thresholding
+            .median(3) // Remove noise
+            .resize(null, 2000, { // Upscale if too small
+                fit: 'inside',
+                withoutEnlargement: false
+            })
+            .toFile(preprocessedPath);
+        
+        return preprocessedPath;
     } catch (error) {
-        throw new Error(`OCR failed: ${error.message}`);
+        console.error('Image preprocessing failed:', error.message);
+        // Return original if preprocessing fails
+        return imagePath;
     }
+};
+
+/**
+ * Extract text from image using OCR with optimized config
+ * @param {string} imagePath - Path to image file
+ * @returns {Promise<Object>} - OCR result with text and confidence
+ */
+const extractTextFromImage = async (imagePath) => {
+    try {
+        // Preprocess image first
+        const processedPath = await preprocessImage(imagePath);
+        
+        const result = await Tesseract.recognize(
+            processedPath,
+            'eng',
+            {
+                logger: () => {}, // Suppress verbose logging
+                tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+                tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY,
+                tessedit_char_whitelist: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,-:/()₹$@ \n'
+            }
+        );
+
+        // Cleanup preprocessed file
+        if (processedPath !== imagePath) {
+            try {
+                await fs.unlink(processedPath);
+            } catch (err) {
+                // Ignore cleanup errors
+            }
+        }
+
+        return {
+            text: result.data.text,
+            confidence: result.data.confidence
+        };
+    } catch (error) {
+        throw new Error(`OCR extraction failed: ${error.message}`);
+    }
+};
+
+/**
+ * Extract vendor/store name from text
+ * @param {string[]} lines - Text lines
+ * @returns {string|null} - Vendor name
+ */
+const extractVendor = (lines) => {
+    // Look in first 10 lines for business name
+    const vendorPatterns = [
+        /^([A-Z][A-Za-z\s&.,']+(?:Ltd|Limited|Pvt|Private|Inc|Corporation|Corp|Company|Co\.|Store|Mart|Market|Shop))/i,
+        /^([A-Z][A-Za-z\s&.,']{5,50})/
+    ];
+    
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+        const line = lines[i].trim();
+        
+        // Skip very short lines, numbers, or addresses
+        if (line.length < 3 || /^\d+$/.test(line) || /^\d+[\s,]/.test(line)) {
+            continue;
+        }
+        
+        for (const pattern of vendorPatterns) {
+            const match = line.match(pattern);
+            if (match) {
+                return match[1].trim().substring(0, 100);
+            }
+        }
+    }
+    
+    // Fallback: return first substantial line
+    for (const line of lines.slice(0, 5)) {
+        const trimmed = line.trim();
+        if (trimmed.length > 5 && trimmed.length < 100 && !/^\d/.test(trimmed)) {
+            return trimmed;
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract date from text
+ * @param {string} text - Full text
+ * @returns {string|null} - Date in ISO format
+ */
+const extractDate = (text) => {
+    const datePatterns = [
+        // dd/mm/yyyy, dd-mm-yyyy
+        /(?:date|dated|bill date|invoice date)[:\s]*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/i,
+        /(\d{1,2}[-/]\d{1,2}[-/]\d{4})/,
+        // yyyy-mm-dd
+        /(\d{4}[-/]\d{1,2}[-/]\d{1,2})/,
+        // dd Mon yyyy
+        /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})/i,
+        // Mon dd, yyyy
+        /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i
+    ];
+    
+    for (const pattern of datePatterns) {
+        const match = text.match(pattern);
+        if (match) {
+            const dateStr = match[1] || match[0];
+            try {
+                const date = new Date(dateStr);
+                if (!isNaN(date.getTime()) && date.getFullYear() > 2000 && date.getFullYear() < 2100) {
+                    return date.toISOString().split('T')[0];
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract invoice/bill number
+ * @param {string} text - Full text
+ * @returns {string|null} - Invoice number
+ */
+const extractInvoiceNumber = (text) => {
+    const patterns = [
+        /(?:invoice|bill|receipt|ref|reference|no|number|#)[:\s]*([A-Z0-9-]+)/i,
+        /(?:inv|rcpt|bill)[:\s]*([A-Z0-9-]+)/i,
+    ];
+    
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match && match[1] && match[1].length > 2) {
+            return match[1].trim();
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract amount from text with currency handling
+ * @param {string} text - Text to search
+ * @param {RegExp} pattern - Pattern to match
+ * @returns {number|null} - Extracted amount
+ */
+const extractAmount = (text, pattern) => {
+    const matches = [...text.matchAll(pattern)];
+    
+    for (const match of matches) {
+        const numStr = match[1] || match[2];
+        if (numStr) {
+            const cleaned = numStr.replace(/[,\s]/g, '');
+            const amount = parseFloat(cleaned);
+            
+            if (!isNaN(amount) && amount > 0 && amount < 10000000) {
+                return Math.round(amount * 100) / 100;
+            }
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract total amount
+ * @param {string} text - Full text
+ * @returns {number|null} - Total amount
+ */
+const extractTotal = (text) => {
+    const totalPatterns = [
+        /(?:total|grand total|net total|amount payable|total amount|amount due|balance due|net amount)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:total|grand total|net)/i,
+        /(?:total|grand total)[:\s]*([0-9,]+\.?\d{0,2})/i
+    ];
+    
+    for (const pattern of totalPatterns) {
+        const amount = extractAmount(text, pattern);
+        if (amount !== null) {
+            return amount;
+        }
+    }
+    
+    // Fallback: find largest amount in text
+    const allAmounts = [...text.matchAll(/(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})/gi)];
+    let maxAmount = 0;
+    
+    for (const match of allAmounts) {
+        const cleaned = match[1].replace(/,/g, '');
+        const amount = parseFloat(cleaned);
+        if (!isNaN(amount) && amount > maxAmount && amount < 10000000) {
+            maxAmount = amount;
+        }
+    }
+    
+    return maxAmount > 0 ? Math.round(maxAmount * 100) / 100 : null;
+};
+
+/**
+ * Extract tax amount
+ * @param {string} text - Full text
+ * @returns {number|null} - Tax amount
+ */
+const extractTax = (text) => {
+    const taxPatterns = [
+        /(?:tax|gst|vat|cgst|sgst|igst|sales tax)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:tax|gst)/i
+    ];
+    
+    for (const pattern of taxPatterns) {
+        const amount = extractAmount(text, pattern);
+        if (amount !== null) {
+            return amount;
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract subtotal amount
+ * @param {string} text - Full text
+ * @returns {number|null} - Subtotal amount
+ */
+const extractSubtotal = (text) => {
+    const subtotalPatterns = [
+        /(?:sub total|subtotal|sub-total|sub)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:sub total|subtotal)/i
+    ];
+    
+    for (const pattern of subtotalPatterns) {
+        const amount = extractAmount(text, pattern);
+        if (amount !== null) {
+            return amount;
+        }
+    }
+    
+    return null;
+};
+
+/**
+ * Extract line items from receipt
+ * @param {string} text - Full text
+ * @returns {Array} - Array of items
+ */
+const extractLineItems = (text) => {
+    const items = [];
+    const lines = text.split('\n');
+    
+    // Look for item patterns: ITEM_NAME  QTY  PRICE  TOTAL
+    const itemPatterns = [
+        // Name  Qty  Price  Total
+        /^(.+?)\s+(\d+(?:\.\d+)?)\s+(?:rs\.?|₹|\$)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)\s+(?:rs\.?|₹|\$)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)/i,
+        // Name  @Price  Qty  Total
+        /^(.+?)\s+@\s*(?:rs\.?|₹|\$)?\s*(\d+(?:\.\d{2})?)\s+(\d+)\s+(?:rs\.?|₹|\$)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)/i,
+        // Name  Price x Qty  Total
+        /^(.+?)\s+(?:rs\.?|₹|\$)?\s*(\d+(?:\.\d{2})?)\s*x\s*(\d+)\s+(?:rs\.?|₹|\$)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)/i,
+    ];
+    
+    for (const line of lines) {
+        const trimmed = line.trim();
+        
+        // Skip headers, empty lines, totals
+        if (!trimmed || 
+            /^(item|product|description|qty|quantity|price|amount|total|subtotal|tax|grand)/i.test(trimmed) ||
+            trimmed.length < 5) {
+            continue;
+        }
+        
+        for (const pattern of itemPatterns) {
+            const match = trimmed.match(pattern);
+            if (match) {
+                const [, name, qtyOrPrice, priceOrQty, total] = match;
+                
+                // Parse based on pattern
+                let itemName, qty, price, itemTotal;
+                
+                if (pattern.source.includes('@')) {
+                    // Pattern: Name @Price Qty Total
+                    itemName = name.trim();
+                    price = parseFloat(qtyOrPrice);
+                    qty = parseInt(priceOrQty);
+                    itemTotal = parseFloat(total.replace(/,/g, ''));
+                } else if (pattern.source.includes('x')) {
+                    // Pattern: Name Price x Qty Total
+                    itemName = name.trim();
+                    price = parseFloat(qtyOrPrice);
+                    qty = parseInt(priceOrQty);
+                    itemTotal = parseFloat(total.replace(/,/g, ''));
+                } else {
+                    // Pattern: Name Qty Price Total
+                    itemName = name.trim();
+                    qty = parseFloat(qtyOrPrice);
+                    price = parseFloat(priceOrQty.replace(/,/g, ''));
+                    itemTotal = parseFloat(total.replace(/,/g, ''));
+                }
+                
+                // Validate
+                if (itemName.length > 2 && qty > 0 && price > 0 && itemTotal > 0) {
+                    items.push({
+                        name: itemName.substring(0, 100),
+                        qty: qty,
+                        price: Math.round(price * 100) / 100,
+                        total: Math.round(itemTotal * 100) / 100
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    
+    return items;
 };
 
 /**
  * Parse bill information from extracted text
  * @param {string} text - Extracted text from bill image
- * @returns {Object} - Parsed bill information
+ * @returns {Object} - Structured bill information
  */
 export const parseBillInfo = (text) => {
-    const billInfo = {
-        vendor: null,
-        amount: null,
-        date: null,
-        category: 'other'
-    };
-
-    try {
-        const textLower = text.toLowerCase();
-        
-        // Extract amount - Enhanced for Indian currency formats
-        // Matches: Rs. 1,250.00 | ₹1250 | INR 1250.50 | Rs 1,250 | 1,250.00 Rs
-        const amountPatterns = [
-            /(?:rs\.?|inr|₹)\s*(\d+(?:[,]\d+)*(?:\.\d{2})?)/gi,
-            /(\d+(?:[,]\d+)*(?:\.\d{2})?)\s*(?:rs\.?|inr|₹)/gi,
-            /total\s*(?:amount)?:?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:[,]\d+)*(?:\.\d{2})?)/gi,
-            /amount\s*(?:due)?:?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:[,]\d+)*(?:\.\d{2})?)/gi,
-        ];
-        
-        let foundAmount = null;
-        for (const pattern of amountPatterns) {
-            const matches = text.matchAll(pattern);
-            for (const match of matches) {
-                const numericPart = match[1];
-                if (numericPart) {
-                    const cleanedAmount = parseFloat(numericPart.replace(/,/g, ''));
-                    // Take the largest reasonable amount (between 1 and 1,000,000)
-                    if (cleanedAmount >= 1 && cleanedAmount <= 1000000) {
-                        if (!foundAmount || cleanedAmount > foundAmount) {
-                            foundAmount = cleanedAmount;
-                        }
-                    }
-                }
-            }
-        }
-        billInfo.amount = foundAmount;
-
-        // Extract date - Multiple date formats
-        const datePatterns = [
-            /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/gi,
-            /(\d{2,4}[-/]\d{1,2}[-/]\d{1,2})/gi,
-            /(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4})/gi,
-            /(?:date|dated):?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/gi,
-        ];
-        
-        for (const pattern of datePatterns) {
-            const dateMatch = text.match(pattern);
-            if (dateMatch) {
-                try {
-                    const parsedDate = new Date(dateMatch[0]);
-                    if (!isNaN(parsedDate.getTime())) {
-                        billInfo.date = parsedDate;
-                        break;
-                    }
-                } catch (e) {
-                    // Continue to next pattern
-                }
-            }
-        }
-
-        // Extract vendor - First meaningful company/business name
-        const lines = text.split('\n').filter(line => line.trim().length > 0);
-        const vendorPatterns = [
-            /^([A-Z][A-Za-z\s&]+(?:Limited|Ltd|Pvt|Private|Company|Co\.|Corporation|Corp|Electric|Electricity|Power|Water|Gas))/i,
-            /^([A-Z][A-Za-z\s&]{3,50})/,
-        ];
-        
-        for (const line of lines.slice(0, 5)) { // Check first 5 lines
-            const trimmedLine = line.trim();
-            if (trimmedLine.length < 3 || /^\d+$/.test(trimmedLine)) continue;
-            
-            for (const pattern of vendorPatterns) {
-                const vendorMatch = trimmedLine.match(pattern);
-                if (vendorMatch) {
-                    billInfo.vendor = vendorMatch[1].trim().substring(0, 100);
-                    break;
-                }
-            }
-            if (billInfo.vendor) break;
-        }
-        
-        // If no pattern matched, take first substantial line
-        if (!billInfo.vendor) {
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed.length > 5 && trimmed.length < 100 && !/^\d+$/.test(trimmed)) {
-                    billInfo.vendor = trimmed;
-                    break;
-                }
-            }
-        }
-
-        // Detect category based on keywords (enhanced)
-        const categoryKeywords = {
-            utilities: ['electricity', 'electric', 'power', 'current', 'utility', 'water', 'sewage', 'gas', 'lpg'],
-            internet: ['internet', 'broadband', 'wifi', 'wi-fi', 'network', 'telecom', 'isp'],
-            rent: ['rent', 'rental', 'lease', 'tenancy'],
-            groceries: ['grocery', 'groceries', 'supermarket', 'mart', 'store', 'provisions'],
-            maintenance: ['maintenance', 'repair', 'plumbing', 'carpentry', 'painting'],
-            cleaning: ['cleaning', 'housekeeping', 'sanitization'],
+    if (!text || text.trim().length === 0) {
+        return {
+            vendor: null,
+            date: null,
+            invoiceNumber: null,
+            subtotal: null,
+            tax: null,
+            total: null,
+            items: [],
+            category: 'other'
         };
-        
-        for (const [category, keywords] of Object.entries(categoryKeywords)) {
-            if (keywords.some(keyword => textLower.includes(keyword))) {
-                billInfo.category = category;
-                break;
-            }
-        }
-
-    } catch (error) {
-        console.error('Error parsing bill info:', error);
     }
-
-    return billInfo;
+    
+    const lines = text.split('\n').filter(line => line.trim().length > 0);
+    const textLower = text.toLowerCase();
+    
+    // Extract all fields
+    const vendor = extractVendor(lines);
+    const date = extractDate(text);
+    const invoiceNumber = extractInvoiceNumber(text);
+    const total = extractTotal(text);
+    const tax = extractTax(text);
+    const subtotal = extractSubtotal(text) || (total && tax ? total - tax : null);
+    const items = extractLineItems(text);
+    
+    // Auto-detect category
+    let category = 'other';
+    const categoryKeywords = {
+        utilities: ['electricity', 'electric', 'power', 'utility', 'water', 'gas', 'lpg', 'current'],
+        internet: ['internet', 'broadband', 'wifi', 'wi-fi', 'telecom', 'network'],
+        rent: ['rent', 'rental', 'lease', 'tenancy'],
+        groceries: ['grocery', 'supermarket', 'mart', 'store', 'provisions', 'kirana'],
+        maintenance: ['maintenance', 'repair', 'plumbing', 'carpentry'],
+        cleaning: ['cleaning', 'housekeeping', 'sanitization']
+    };
+    
+    for (const [cat, keywords] of Object.entries(categoryKeywords)) {
+        if (keywords.some(kw => textLower.includes(kw))) {
+            category = cat;
+            break;
+        }
+    }
+    
+    return {
+        vendor,
+        date,
+        invoiceNumber,
+        subtotal,
+        tax,
+        total,
+        items,
+        category
+    };
 };
 
 /**
- * Process bill image and extract information
- * @param {string} imagePath - Path to bill image or URL
- * @returns {Promise<Object>} - Parsed bill information
+ * Process bill image and extract structured information
+ * @param {string} imagePath - Path to bill image
+ * @returns {Promise<Object>} - Structured bill data with raw text
  */
 export const processBillImage = async (imagePath) => {
     try {
-        console.log('🔍 Starting OCR on image:', imagePath);
+        // Validate file exists
+        try {
+            await fs.access(imagePath);
+        } catch (err) {
+            throw new Error('Image file not found or inaccessible');
+        }
         
-        // Extract text from image
-        const text = await extractTextFromImage(imagePath);
+        // Extract text with OCR
+        const ocrResult = await extractTextFromImage(imagePath);
         
-        console.log('📄 Extracted text length:', text?.length || 0);
-        console.log('📝 Text preview:', text?.substring(0, 200));
-        
-        if (!text || text.trim().length === 0) {
-            console.warn('⚠️ No text extracted from image');
+        if (!ocrResult.text || ocrResult.text.trim().length === 0) {
             return {
-                success: true,
+                success: false,
+                error: 'No text could be extracted from the image',
+                confidence: ocrResult.confidence || 0,
                 rawText: '',
-                parsedData: {
-                    vendor: null,
-                    amount: null,
-                    date: null,
-                    category: 'other'
-                }
+                parsedData: null
             };
         }
         
         // Parse bill information
-        const billInfo = parseBillInfo(text);
-        
-        console.log('✅ Parsed bill info:', billInfo);
+        const billInfo = parseBillInfo(ocrResult.text);
         
         return {
             success: true,
-            rawText: text,
+            confidence: Math.round(ocrResult.confidence || 0),
+            rawText: ocrResult.text,
             parsedData: billInfo
         };
     } catch (error) {
-        console.error('❌ OCR processing error:', error);
+        console.error('OCR processing error:', error.message);
         return {
             success: false,
             error: error.message,
+            confidence: 0,
             rawText: null,
             parsedData: null
         };
