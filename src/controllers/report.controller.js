@@ -8,6 +8,7 @@ import { Transaction } from "../models/transaction.model.js";
 import { BudgetSnapshot } from "../models/budgetSnapshot.model.js";
 import mongoose from "mongoose";
 import mlService from "../services/ml.service.js";
+import PDFDocument from 'pdfkit';
 
 // Get monthly report
 export const getMonthlyReport = asyncHandler(async (req, res) => {
@@ -70,6 +71,27 @@ export const getMonthlyReport = asyncHandler(async (req, res) => {
         }
     ]);
 
+    // Get recent transactions for display
+    const recentTransactions = await Transaction.find({
+        flatId: new mongoose.Types.ObjectId(flatId),
+        type: 'payment',
+        createdAt: { $gte: startDate, $lt: endDate }
+    })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .populate('fromUserId', 'userName')
+    .populate('billId', 'title category')
+    .lean();
+
+    // Format transactions for frontend
+    const formattedTransactions = recentTransactions.map(txn => ({
+        description: txn.note || txn.billId?.title || 'Payment',
+        type: txn.billId?.category || 'payment',
+        amount: txn.amount,
+        date: txn.createdAt,
+        paymentMethod: txn.paymentMethod
+    }));
+
     // Get budget snapshot
     let snapshot = await BudgetSnapshot.findOne({ flatId, month: targetMonth });
     if (!snapshot && flat.monthlyBudget > 0) {
@@ -83,6 +105,9 @@ export const getMonthlyReport = asyncHandler(async (req, res) => {
     return res.status(200).json(
         new ApiResponse(200, {
             month: targetMonth,
+            totalSpent: totalPaid,
+            transactionCount: payments[0]?.count || 0,
+            transactions: formattedTransactions,
             summary: {
                 totalBills,
                 totalPaid,
@@ -321,12 +346,12 @@ export const getCategorySpending = asyncHandler(async (req, res) => {
     );
 });
 
-// Export report (basic CSV data)
+// Export report (CSV or PDF)
 export const exportReport = asyncHandler(async (req, res) => {
     const { flatId } = req.params;
-    const { month, format = 'json' } = req.query;
+    const { month, format = 'pdf' } = req.query;
 
-    const flat = await Flat.findById(flatId);
+    const flat = await Flat.findById(flatId).populate('admin', 'userName');
     if (!flat) {
         throw new ApiError(404, "Flat not found");
     }
@@ -340,26 +365,169 @@ export const exportReport = asyncHandler(async (req, res) => {
     const endDate = new Date(startDate);
     endDate.setMonth(endDate.getMonth() + 1);
 
-    const bills = await Bill.find({
+    // Get transactions for the month
+    const transactions = await Transaction.find({
         flatId,
-        dueDate: { $gte: startDate, $lt: endDate }
+        type: 'payment',
+        createdAt: { $gte: startDate, $lt: endDate }
     })
-    .populate('createdBy', 'userName')
+    .populate('fromUserId', 'userName')
+    .populate('billId', 'title category')
+    .sort({ createdAt: -1 })
+    .limit(20)
     .lean();
+
+    // Get category breakdown
+    const categoryData = await Bill.aggregate([
+        {
+            $match: {
+                flatId: new mongoose.Types.ObjectId(flatId),
+                dueDate: { $gte: startDate, $lt: endDate }
+            }
+        },
+        {
+            $group: {
+                _id: '$category',
+                totalAmount: { $sum: '$totalAmount' },
+                count: { $sum: 1 }
+            }
+        }
+    ]);
+
+    const totalSpent = categoryData.reduce((sum, cat) => sum + cat.totalAmount, 0);
+    const categorySpending = categoryData.map(cat => ({
+        category: cat._id,
+        totalAmount: cat.totalAmount,
+        count: cat.count,
+        percentage: totalSpent > 0 ? (cat.totalAmount / totalSpent) * 100 : 0
+    }));
 
     if (format === 'csv') {
         // Generate CSV string
-        const csvHeader = 'Date,Title,Category,Amount,Status,Created By\n';
-        const csvRows = bills.map(bill => 
-            `${new Date(bill.dueDate).toLocaleDateString()},${bill.title},${bill.category},${bill.totalAmount},${bill.status},${bill.createdBy?.userName || 'Unknown'}`
+        const csvHeader = 'Date,Description,Type,Amount\n';
+        const csvRows = transactions.map(txn => 
+            `${new Date(txn.createdAt).toLocaleDateString()},${txn.note || txn.billId?.title || 'Transaction'},${txn.billId?.category || 'payment'},${txn.amount}`
         ).join('\n');
         
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename=report-${targetMonth}.csv`);
+        res.setHeader('Content-Disposition', `attachment; filename=SmartRent_Report_${targetMonth}.csv`);
         return res.send(csvHeader + csvRows);
     }
 
+    if (format === 'pdf') {
+        // Generate PDF
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=SmartRent_Report_${targetMonth}.pdf`);
+        
+        // Pipe PDF to response
+        doc.pipe(res);
+
+        // Title
+        doc.fontSize(24).fillColor('#1f2937').text('Smart Rent - Monthly Report', { align: 'left' });
+        doc.moveTo(50, doc.y).lineTo(550, doc.y).strokeColor('#3b82f6').lineWidth(3).stroke();
+        doc.moveDown();
+
+        // Report Info
+        doc.fontSize(12).fillColor('#6b7280');
+        doc.text(`Flat: ${flat.name}`, { continued: false });
+        doc.text(`Period: ${new Date(startDate).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`, { continued: false });
+        doc.text(`Generated: ${new Date().toLocaleDateString()}`, { continued: false });
+        doc.moveDown(2);
+
+        // Summary boxes
+        doc.fontSize(14).fillColor('#111827').text('Summary', { underline: true });
+        doc.moveDown(0.5);
+        doc.fontSize(11).fillColor('#6b7280').text(`Total Spent: ₹${totalSpent.toFixed(2)}`, { continued: false });
+        doc.text(`Transactions: ${transactions.length}`, { continued: false });
+        doc.moveDown(2);
+
+        // Category Breakdown
+        if (categorySpending.length > 0) {
+            doc.fontSize(14).fillColor('#111827').text('Category Breakdown', { underline: true });
+            doc.moveDown(0.5);
+
+            // Table header
+            doc.fontSize(10).fillColor('#374151');
+            const tableTop = doc.y;
+            const col1 = 50;
+            const col2 = 200;
+            const col3 = 350;
+            const col4 = 450;
+
+            doc.text('Category', col1, tableTop, { width: 140 });
+            doc.text('Amount', col2, tableTop, { width: 140 });
+            doc.text('Percentage', col3, tableTop, { width: 90 });
+            doc.text('Count', col4, tableTop, { width: 90 });
+            
+            doc.moveTo(col1, doc.y).lineTo(550, doc.y).strokeColor('#e5e7eb').lineWidth(1).stroke();
+            doc.moveDown(0.5);
+
+            // Table rows
+            categorySpending.forEach((cat) => {
+                const rowTop = doc.y;
+                doc.fontSize(9).fillColor('#111827');
+                doc.text(cat.category.charAt(0).toUpperCase() + cat.category.slice(1), col1, rowTop, { width: 140 });
+                doc.text(`₹${cat.totalAmount.toFixed(2)}`, col2, rowTop, { width: 140 });
+                doc.text(`${cat.percentage.toFixed(1)}%`, col3, rowTop, { width: 90 });
+                doc.text(cat.count.toString(), col4, rowTop, { width: 90 });
+                doc.moveDown(0.7);
+            });
+
+            doc.moveDown(1);
+        }
+
+        // Recent Transactions
+        if (transactions.length > 0) {
+            doc.fontSize(14).fillColor('#111827').text('Recent Transactions', { underline: true });
+            doc.moveDown(0.5);
+
+            // Table header
+            doc.fontSize(10).fillColor('#374151');
+            const tableTop = doc.y;
+            const col1 = 50;
+            const col2 = 130;
+            const col3 = 310;
+            const col4 = 470;
+
+            doc.text('Date', col1, tableTop, { width: 70 });
+            doc.text('Description', col2, tableTop, { width: 170 });
+            doc.text('Type', col3, tableTop, { width: 150 });
+            doc.text('Amount', col4, tableTop, { width: 80 });
+            
+            doc.moveTo(col1, doc.y).lineTo(550, doc.y).strokeColor('#e5e7eb').lineWidth(1).stroke();
+            doc.moveDown(0.5);
+
+            // Table rows
+            transactions.forEach((txn) => {
+                const rowTop = doc.y;
+                doc.fontSize(9).fillColor('#111827');
+                doc.text(new Date(txn.createdAt).toLocaleDateString(), col1, rowTop, { width: 70 });
+                doc.text(txn.note || txn.billId?.title || 'Transaction', col2, rowTop, { width: 170 });
+                doc.text((txn.billId?.category || 'payment').charAt(0).toUpperCase() + (txn.billId?.category || 'payment').slice(1), col3, rowTop, { width: 150 });
+                doc.text(`₹${txn.amount.toFixed(2)}`, col4, rowTop, { width: 80 });
+                doc.moveDown(0.7);
+
+                // Add new page if needed
+                if (doc.y > 700) {
+                    doc.addPage();
+                }
+            });
+        }
+
+        // Footer
+        doc.moveDown(3);
+        doc.fontSize(9).fillColor('#6b7280').text('This report was generated by Smart Rent', { align: 'center' });
+        doc.text(`© ${new Date().getFullYear()} Smart Rent. All rights reserved.`, { align: 'center' });
+
+        // Finalize PDF
+        doc.end();
+        return;
+    }
+
     return res.status(200).json(
-        new ApiResponse(200, { bills, month: targetMonth }, "Report exported successfully")
+        new ApiResponse(200, { transactions, categorySpending, month: targetMonth }, "Report exported successfully")
     );
 });

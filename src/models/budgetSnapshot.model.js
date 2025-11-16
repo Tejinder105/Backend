@@ -65,6 +65,13 @@ budgetSnapshotSchema.virtual('variancePercentage').get(function() {
 
 // Method to update actual spent
 budgetSnapshotSchema.methods.updateActualSpent = async function() {
+    // DEPRECATED: This method is kept for backward compatibility
+    // but should NOT be used in optimized code paths.
+    // Use reportService.getCompleteFinancialReport() instead which calculates
+    // actualSpent efficiently without redundant aggregations.
+    
+    console.warn('⚠️ DEPRECATED: updateActualSpent() called. Use reportService for optimized queries.');
+    
     const Bill = mongoose.model('Bill');
     const startDate = new Date(this.month + '-01');
     const endDate = new Date(startDate);
@@ -124,6 +131,25 @@ budgetSnapshotSchema.statics.getOrCreate = async function(flatId, month, budgetA
         });
     }
 
+    return snapshot;
+};
+
+// Static method to get current month's snapshot
+budgetSnapshotSchema.statics.getCurrentMonthSnapshot = async function(flatId) {
+    const currentMonth = new Date().toISOString().slice(0, 7); // Format: YYYY-MM
+    
+    let snapshot = await this.findOne({ flatId, month: currentMonth });
+    
+    // If no snapshot exists for current month, try to create one
+    if (!snapshot) {
+        const Flat = mongoose.model('Flat');
+        const flat = await Flat.findById(flatId);
+        
+        if (flat && flat.monthlyBudget > 0) {
+            snapshot = await this.getOrCreate(flatId, currentMonth, flat.monthlyBudget);
+        }
+    }
+    
     return snapshot;
 };
 

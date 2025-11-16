@@ -2,6 +2,12 @@ import mongoose, { Schema } from "mongoose";
 
 const expenseSchema = new Schema(
     {
+        flatId: {
+            type: Schema.Types.ObjectId,
+            ref: "Flat",
+            required: false, // Will be true after migration
+            index: true
+        },
         createdBy: {
             type: Schema.Types.ObjectId,
             ref: "User",
@@ -78,5 +84,9 @@ const expenseSchema = new Schema(
 expenseSchema.index({ createdBy: 1, status: 1 });
 expenseSchema.index({ "participants.userId": 1 });
 expenseSchema.index({ category: 1 });
+expenseSchema.index({ flatId: 1, status: 1, createdAt: -1 });
+expenseSchema.index({ flatId: 1, category: 1 });
+expenseSchema.index({ "participants.userId": 1, "participants.isPaid": 1 });
+expenseSchema.index({ flatId: 1, createdAt: -1 }); // Optimized for history queries
 
 export const Expense = mongoose.model("Expense", expenseSchema);

@@ -198,9 +198,9 @@ const extractAmount = (text, pattern) => {
  */
 const extractTotal = (text) => {
     const totalPatterns = [
-        /(?:total|grand total|net total|amount payable|total amount|amount due|balance due|net amount)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
-        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:total|grand total|net)/i,
-        /(?:total|grand total)[:\s]*([0-9,]+\.?\d{0,2})/i
+        /(?:total|grand total|net total|amount payable|total amount|amount due|balance due|net amount)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/gi,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:total|grand total|net)/gi,
+        /(?:total|grand total)[:\s]*([0-9,]+\.?\d{0,2})/gi
     ];
     
     for (const pattern of totalPatterns) {
@@ -232,8 +232,8 @@ const extractTotal = (text) => {
  */
 const extractTax = (text) => {
     const taxPatterns = [
-        /(?:tax|gst|vat|cgst|sgst|igst|sales tax)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
-        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:tax|gst)/i
+        /(?:tax|gst|vat|cgst|sgst|igst|sales tax)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/gi,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:tax|gst)/gi
     ];
     
     for (const pattern of taxPatterns) {
@@ -253,8 +253,8 @@ const extractTax = (text) => {
  */
 const extractSubtotal = (text) => {
     const subtotalPatterns = [
-        /(?:sub total|subtotal|sub-total|sub)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/i,
-        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:sub total|subtotal)/i
+        /(?:sub total|subtotal|sub-total|sub)[:\s]*(?:rs\.?|inr|₹|\$)?\s*([0-9,]+\.?\d{0,2})/gi,
+        /(?:rs\.?|inr|₹|\$)\s*([0-9,]+\.?\d{0,2})\s*(?:sub total|subtotal)/gi
     ];
     
     for (const pattern of subtotalPatterns) {

@@ -3,6 +3,7 @@ import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import { Bill } from "../models/bill.model.js";
 import { BillSplit } from "../models/billSplit.model.js";
+import { Transaction } from "../models/transaction.model.js";
 import { Flat } from "../models/flat.model.js";
 import { processBillImage } from "../services/ocr.service.js";
 import { uploadBillImage } from "../services/cloudinary.service.js";
@@ -329,17 +330,21 @@ export const scanBill = asyncHandler(async (req, res) => {
         // Return structured response
         return res.status(200).json(
             new ApiResponse(200, {
+                success: ocrResult.success,
                 imageUrl: imageUrl || null,
                 confidence: ocrResult.confidence,
-                vendor: ocrResult.parsedData?.vendor,
-                date: ocrResult.parsedData?.date,
-                invoiceNumber: ocrResult.parsedData?.invoiceNumber,
-                subtotal: ocrResult.parsedData?.subtotal,
-                tax: ocrResult.parsedData?.tax,
-                total: ocrResult.parsedData?.total,
-                items: ocrResult.parsedData?.items || [],
-                category: ocrResult.parsedData?.category || 'other',
-                rawText: ocrResult.rawText
+                rawText: ocrResult.rawText,
+                parsedData: {
+                    vendor: ocrResult.parsedData?.vendor,
+                    date: ocrResult.parsedData?.date,
+                    invoiceNumber: ocrResult.parsedData?.invoiceNumber,
+                    subtotal: ocrResult.parsedData?.subtotal,
+                    tax: ocrResult.parsedData?.tax,
+                    total: ocrResult.parsedData?.total,
+                    amount: ocrResult.parsedData?.total,
+                    items: ocrResult.parsedData?.items || [],
+                    category: ocrResult.parsedData?.category || 'other'
+                }
             }, "Bill scanned successfully")
         );
     } catch (error) {
@@ -358,7 +363,7 @@ export const scanBill = asyncHandler(async (req, res) => {
 // Mark bill split as paid
 export const markBillPaid = asyncHandler(async (req, res) => {
     const { billId } = req.params;
-    const { userId } = req.body; // Which user's split to mark as paid
+    const { userId, paymentMethod, transactionReference, note } = req.body;
 
     const bill = await Bill.findById(billId);
     if (!bill) {
@@ -381,12 +386,44 @@ export const markBillPaid = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Bill split already paid");
     }
 
-    // Mark as paid
-    await billSplit.markPaid();
+    // Start a session for transaction safety
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    return res.status(200).json(
-        new ApiResponse(200, billSplit, "Bill marked as paid successfully")
-    );
+    try {
+        // Create transaction record
+        const transaction = await Transaction.create([{
+            flatId: bill.flatId,
+            type: 'payment',
+            amount: billSplit.amount,
+            fromUserId: targetUserId,
+            toUserId: bill.createdBy,
+            billId: bill._id,
+            paymentMethod: paymentMethod || 'other',
+            transactionReference: transactionReference || undefined,
+            note: note || `Payment for ${bill.title}`,
+            status: 'completed'
+        }], { session });
+
+        // Mark bill split as paid with transaction reference
+        billSplit.paymentId = transaction[0]._id;
+        await billSplit.markPaid();
+        await billSplit.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
+
+        return res.status(200).json(
+            new ApiResponse(200, { 
+                billSplit, 
+                transaction: transaction[0] 
+            }, "Bill marked as paid successfully")
+        );
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+    }
 });
 
 // Get user dues

@@ -15,9 +15,11 @@ console.log("NODE_ENV:", process.env.NODE_ENV);
     console.log("✅ Database connected");
 
     const PORT = process.env.PORT || 8000;
+    const HOST = process.env.HOST || '0.0.0.0'; // Listen on all network interfaces
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`🚀 Server running on http://${HOST}:${PORT}`);
+      console.log(`📱 Network access: http://192.168.1.11:${PORT}`);
       startCronJobs();
     });
   } catch (err) {

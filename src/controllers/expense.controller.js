@@ -3,6 +3,7 @@ import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import { Expense } from "../models/expense.model.js";
 import { notifyExpenseCreated } from "../services/notification.service.js";
+import ExpenseService from "../services/expense.service.js";
 import mongoose from "mongoose";
 
 const getUserExpenses = asyncHandler(async (req, res) => {
@@ -501,6 +502,177 @@ const getFlatExpenses = asyncHandler(async (req, res) => {
     );
 });
 
+// ==================== NEW UNIFIED ENDPOINTS USING EXPENSESERVICE ====================
+
+/**
+ * Create unified expense (bills or split expenses)
+ * Uses ExpenseService for transactional safety and unified logic
+ */
+const createUnifiedExpense = asyncHandler(async (req, res) => {
+    const { 
+        flatId, 
+        type = 'split', // 'shared' (bill) or 'split' (expense)
+        title,
+        description,
+        vendor,
+        totalAmount,
+        dueDate,
+        category,
+        splitMethod = 'equal',
+        participants,
+        notes,
+        isRecurring = false,
+        recurrenceRule,
+        imageUrl
+    } = req.body;
+
+    // Validation
+    if (!flatId || !title || !totalAmount || !participants || participants.length === 0) {
+        throw new ApiError(400, "Missing required fields: flatId, title, totalAmount, participants");
+    }
+
+    if (totalAmount <= 0) {
+        throw new ApiError(400, "Total amount must be greater than 0");
+    }
+
+    // Call ExpenseService
+    const result = await ExpenseService.createExpense({
+        flatId,
+        type,
+        title,
+        description,
+        vendor,
+        totalAmount,
+        dueDate,
+        category,
+        splitMethod,
+        participants,
+        notes,
+        isRecurring,
+        recurrenceRule,
+        imageUrl
+    }, req.user._id);
+
+    return res.status(201).json(
+        new ApiResponse(201, result, `${type === 'shared' ? 'Bill' : 'Expense'} created successfully`)
+    );
+});
+
+/**
+ * Record bulk payment for multiple expenses
+ * Uses ExpenseService for transactional safety
+ */
+const recordBulkPayment = asyncHandler(async (req, res) => {
+    const {
+        payments // Array of { expenseId, expenseType, amount, paymentMethod, transactionReference }
+    } = req.body;
+
+    if (!payments || !Array.isArray(payments) || payments.length === 0) {
+        throw new ApiError(400, "Payments array is required");
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Process each payment
+    for (const payment of payments) {
+        try {
+            const { expenseId, expenseType, amount, paymentMethod, transactionReference } = payment;
+
+            if (!expenseId || !expenseType) {
+                errors.push({ expenseId, error: "Missing expenseId or expenseType" });
+                continue;
+            }
+
+            const result = await ExpenseService.recordPayment({
+                expenseId,
+                expenseType,
+                userId: req.user._id,
+                amount,
+                paymentMethod: paymentMethod || 'other',
+                transactionReference
+            }, req.user._id);
+
+            results.push({ expenseId, success: true, data: result });
+        } catch (error) {
+            errors.push({ expenseId: payment.expenseId, error: error.message });
+        }
+    }
+
+    return res.status(200).json(
+        new ApiResponse(200, { 
+            successful: results.length,
+            failed: errors.length,
+            results,
+            errors
+        }, "Bulk payment processing completed")
+    );
+});
+
+/**
+ * Get combined user dues (bills + expenses)
+ * Uses ExpenseService for unified query
+ */
+const getUserDues = asyncHandler(async (req, res) => {
+    const { flatId } = req.query;
+
+    if (!flatId) {
+        throw new ApiError(400, "flatId is required");
+    }
+
+    const dues = await ExpenseService.getUserDues(req.user._id, flatId);
+
+    // Set cache headers for 5 minutes (current month data changes frequently)
+    res.set('Cache-Control', 'private, max-age=300'); // 5 minutes
+    res.set('ETag', `W/"${Date.now()}"`);
+
+    return res.status(200).json(
+        new ApiResponse(200, dues, "User dues fetched successfully")
+    );
+});
+
+/**
+ * Get expense history with pagination
+ * Uses ExpenseService for optimized query
+ */
+const getExpenseHistory = asyncHandler(async (req, res) => {
+    const { 
+        flatId, 
+        status, 
+        category, 
+        startDate, 
+        endDate,
+        page = 1,
+        limit = 20
+    } = req.query;
+
+    if (!flatId) {
+        throw new ApiError(400, "flatId is required");
+    }
+
+    const filters = {};
+    if (status) filters.status = status;
+    if (category) filters.category = category;
+    if (startDate) filters.startDate = new Date(startDate);
+    if (endDate) filters.endDate = new Date(endDate);
+
+    const history = await ExpenseService.getExpenseHistory(
+        flatId, 
+        filters, 
+        parseInt(page), 
+        parseInt(limit)
+    );
+
+    // Set cache headers - longer TTL for historical data
+    const isHistorical = startDate && new Date(startDate) < new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const cacheAge = isHistorical ? 3600 : 300; // 1 hour for old data, 5 min for recent
+    res.set('Cache-Control', `private, max-age=${cacheAge}`);
+
+    return res.status(200).json(
+        new ApiResponse(200, history, "Expense history fetched successfully")
+    );
+});
+
 export {
     getUserExpenses,
     getCreatedExpenses,
@@ -511,5 +683,10 @@ export {
     deleteExpense,
     getExpenseStats,
     getAvailableFlatmates,
-    getFlatExpenses
+    getFlatExpenses,
+    // New unified endpoints
+    createUnifiedExpense,
+    recordBulkPayment,
+    getUserDues,
+    getExpenseHistory
 };
