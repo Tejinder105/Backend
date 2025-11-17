@@ -295,8 +295,12 @@ class ReportService {
                             $group: {
                                 _id: '$category',
                                 totalAmount: { $sum: '$totalAmount' },
-                                count: { $sum: 1 },
-                                source: { $literal: 'bill' }
+                                count: { $sum: 1 }
+                            }
+                        },
+                        {
+                            $addFields: {
+                                source: 'bill'
                             }
                         }
                     ],
@@ -330,8 +334,12 @@ class ReportService {
                                 category: 1,
                                 status: 1,
                                 dueDate: 1,
-                                'creator.userName': 1,
-                                type: { $literal: 'bill' }
+                                'creator.userName': 1
+                            }
+                        },
+                        {
+                            $addFields: {
+                                type: 'bill'
                             }
                         }
                     ]
@@ -363,8 +371,12 @@ class ReportService {
                             $group: {
                                 _id: '$category',
                                 totalAmount: { $sum: '$totalAmount' },
-                                count: { $sum: 1 },
-                                source: { $literal: 'expense' }
+                                count: { $sum: 1 }
+                            }
+                        },
+                        {
+                            $addFields: {
+                                source: 'expense'
                             }
                         }
                     ]

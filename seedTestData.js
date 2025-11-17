@@ -1,34 +1,23 @@
-/*
-seedTestData.js (FIXED VERSION)
-- Correct import paths for your folder structure
-- joinCode added manually to avoid validation error
-- ES module compatible
-- Fully runnable
-
-USAGE:
-  1) Place this file in your Backend/ folder (same level as src/)
-  2) Install: npm install dayjs
-  3) Ensure .env has MONGO_URI
-  4) Run: node seedTestData.js
-  5) Cleanup: node seedTestData.js --cleanup
-*/
+/**
+ * Enhanced Seed Script - 6 Months Historical Data with Realistic Patterns
+ * Generates meaningful spending patterns for ML forecasting
+ */
 
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc.js';
+dayjs.extend(utc);
 
-// ------------------ IMPORT MODELS ------------------
-// Adjusted for your folder structure (/src/models/*.model.js)
+/* -------------------- IMPORT MODELS -------------------- */
 import './src/models/user.model.js';
 import './src/models/flat.model.js';
 import './src/models/bill.model.js';
 import './src/models/billSplit.model.js';
 import './src/models/expense.model.js';
 import './src/models/budgetSnapshot.model.js';
-import './src/models/payment.model.js';
 import './src/models/transaction.model.js';
 import './src/models/notification.model.js';
-// ----------------------------------------------------
 
 const User = mongoose.model('User');
 const Flat = mongoose.model('Flat');
@@ -36,226 +25,325 @@ const Bill = mongoose.model('Bill');
 const BillSplit = mongoose.model('BillSplit');
 const Expense = mongoose.model('Expense');
 const BudgetSnapshot = mongoose.model('BudgetSnapshot');
-const Payment = mongoose.model('Payment');
 const Transaction = mongoose.model('Transaction');
 const Notification = mongoose.model('Notification');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/smart_rent_test';
-const TEST_TAG = 'TEST_DATA_SEED_v1';
+/* -------------------- CONFIG -------------------- */
+const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/smart_rent_test';
+const TEST_TAG = 'SEED_V3';
+const RENT = 35000;
+const MONTHLY_BUDGET = 80000;
+const NUM_MONTHS = 6;
 
-// ------------------ USERS ------------------
-const USERS = [
-  { userName: 'tejinderpal', fullName: 'Tejinderpal', email: 'tejinderpal@test.com', phone: '9999000001', password: 'password123' },
-  { userName: 'happy', fullName: 'Happy', email: 'happy@test.com', phone: '9999000002', password: 'password123' },
-  { userName: 'ishan', fullName: 'Ishan', email: 'ishan@test.com', phone: '9999000003', password: 'password123' },
-  { userName: 'yuvraj', fullName: 'Yuvraj', email: 'yuvraj@test.com', phone: '9999000004', password: 'password123' },
-  { userName: 'ramswarup', fullName: 'Ramswarup', email: 'ramswarup@test.com', phone: '9999000005', password: 'password123' }
-];
+// Realistic expense patterns per category with seasonal variations
+const EXPENSE_PATTERNS = {
+  groceries: {
+    baseAmount: 12000,
+    frequency: 8, // times per month
+    variance: 0.25,
+    vendors: ['Big Bazaar', 'DMart', 'More Supermarket', 'Local Grocery Store'],
+    seasonal: { 6: 1.15, 7: 1.1, 11: 1.2, 12: 1.25 } // Festival months
+  },
+  utilities: {
+    baseAmount: 4500,
+    frequency: 3,
+    variance: 0.3,
+    vendors: ['Electricity Board', 'Water Department', 'Gas Cylinder'],
+    seasonal: { 5: 1.4, 6: 1.5, 12: 1.3 } // Summer/Winter higher
+  },
+  internet: {
+    baseAmount: 1200,
+    frequency: 1,
+    variance: 0.05,
+    vendors: ['Jio Fiber', 'Airtel', 'ACT Broadband'],
+    seasonal: {}
+  },
+  cleaning: {
+    baseAmount: 1800,
+    frequency: 4,
+    variance: 0.2,
+    vendors: ['Cleaning Supplies Store', 'Online Mart', 'Local Shop'],
+    seasonal: { 10: 1.2, 3: 1.15 } // Festival cleaning
+  },
+  maintenance: {
+    baseAmount: 2500,
+    frequency: 2,
+    variance: 0.4,
+    vendors: ['Hardware Store', 'Plumber', 'Electrician', 'Carpenter'],
+    seasonal: { 7: 1.3, 8: 1.3 } // Monsoon repairs
+  },
+  furniture: {
+    baseAmount: 3000,
+    frequency: 1,
+    variance: 0.6,
+    vendors: ['IKEA', 'Furniture Store', 'Online Shopping', 'Local Carpenter'],
+    seasonal: { 1: 1.3, 10: 1.2 } // New year, Diwali
+  },
+  other: {
+    baseAmount: 5000,
+    frequency: 8,
+    variance: 0.5,
+    vendors: ['Swiggy', 'Zomato', 'Restaurant', 'Movie Theater', 'Uber', 'Ola', 'Pharmacy'],
+    seasonal: { 12: 1.4, 1: 1.3, 4: 1.2 } // Holidays, entertainment, transport, health combined
+  }
+};
 
-// Provided values
-const RENT = 30000;
-const MONTHLY_BUDGET = 70000;
-
-async function connect() {
-  await mongoose.connect(MONGO_URI);
-}
-
-async function cleanup() {
-  console.log('Removing test data...');
-  await Notification.deleteMany({ message: { $regex: TEST_TAG } });
-  await Transaction.deleteMany({ note: { $regex: TEST_TAG } });
-  await Payment.deleteMany({ notes: { $regex: TEST_TAG } });
-  await BudgetSnapshot.deleteMany({ notes: { $regex: TEST_TAG } });
-  await Expense.deleteMany({ notes: { $regex: TEST_TAG } });
-  await Bill.deleteMany({ notes: { $regex: TEST_TAG } });
-  await Flat.deleteMany({ name: { $regex: TEST_TAG } });
-  await User.deleteMany({ email: { $regex: '@test.local$' } });
-  console.log('Cleanup complete!');
-}
-
-function randBetween(min, max) {
+function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-async function seed() {
-  console.log('Seeding test data into', MONGO_URI);
+function randomChoice(arr) {
+  return arr[rand(0, arr.length - 1)];
+}
 
-  // ------------------ 1) USERS ------------------
-  const createdUsers = [];
+async function connect() {
+  console.log('🔌 Connecting to MongoDB:', MONGO_URI);
+  await mongoose.connect(MONGO_URI);
+  console.log('✅ Connected successfully\n');
+}
+
+async function cleanup() {
+  console.log('🗑️  Cleaning up old test data...');
+  await Notification.deleteMany({ message: { $regex: TEST_TAG } });
+  await Transaction.deleteMany({ note: { $regex: TEST_TAG } });
+  await Expense.deleteMany({ notes: { $regex: TEST_TAG } });
+  await BudgetSnapshot.deleteMany({ notes: { $regex: TEST_TAG } });
+  await BillSplit.deleteMany({ note: { $regex: TEST_TAG } });
+  await Bill.deleteMany({ notes: { $regex: TEST_TAG } });
+  await Flat.deleteMany({ name: { $regex: TEST_TAG } });
+  await User.deleteMany({ email: { $regex: '@gmail.com$' } });
+  console.log('✅ Cleanup complete\n');
+}
+
+async function seed() {
+  console.log('🌱 Starting enhanced seed process...\n');
+
+  // Create realistic users
+  const USERS = [
+    { userName: 'Tejinderpal', email: 'tejinderpal@gmail.com', phone: '9876543210', password: 'test123' },
+    { userName: 'Happy', email: 'happy@gmail.com', phone: '9876543211', password: 'test123' },
+    { userName: 'Ishan', email: 'ishan@gmail.com', phone: '9876543212', password: 'test123' },
+    { userName: 'Yuvraj', email: 'yuvraj@gmail.com', phone: '9876543213', password: 'test123' },
+    { userName: 'Ramswarup', email: 'ramswarup@gmail.com', phone: '9876543214', password: 'test123' }
+  ];
+
+  const users = [];
   for (const u of USERS) {
     let user = await User.findOne({ email: u.email });
-    if (!user) user = await User.create(u);
-    createdUsers.push(user);
+    if (!user) {
+      user = await User.create({ ...u, notes: TEST_TAG });
+    }
+    users.push(user);
+    console.log(`✔️  User created: ${user.userName}`);
   }
-  console.log('Users ready:', createdUsers.map(u => u.userName).join(', '));
 
-  // ------------------ 2) FLAT ------------------
-  const adminUser = createdUsers[0];
-  const flatName = `SmartRent_Test_${TEST_TAG}`;
+  const adminUser = users[0];
+  console.log();
 
-  let flat = await Flat.findOne({ name: flatName });
+  // Create flat
+  let flat = await Flat.findOne({ name: `Sunshine Apartments ${TEST_TAG}` });
   if (!flat) {
     flat = await Flat.create({
-      name: flatName,
-      joinCode: 'TEST' + Math.floor(Math.random() * 99999), // FIXED
+      name: `Sunshine Apartments ${TEST_TAG}`,
+      joinCode: 'JOIN' + Math.random().toString(36).substring(2, 8).toUpperCase(),
       rent: RENT,
       currency: 'INR',
       monthlyBudget: MONTHLY_BUDGET,
       admin: adminUser._id,
-      members: createdUsers.map((u, idx) => ({
+      members: users.map((u, i) => ({
         userId: u._id,
-        role: idx === 0 ? 'admin' : 'co_tenant',
-        monthlyContribution: Math.round(RENT / USERS.length),
+        role: i === 0 ? 'admin' : 'co_tenant',
+        monthlyContribution: Math.round(RENT / users.length),
         status: 'active'
       })),
-      stats: { totalMembers: USERS.length, totalExpenses: 0, totalPayments: 0 }
+      notes: TEST_TAG
     });
   }
+  console.log(`🏢 Flat created: ${flat.name}\n`);
 
-  console.log('Flat ready:', flat.name, 'JoinCode:', flat.joinCode);
+  const today = dayjs().utc();
+  const allBills = [];
+  const allExpenses = [];
+  const allTransactions = [];
 
-  const today = dayjs();
-  const memberIds = flat.members.map(m => m.userId);
+  // Generate 6 months of data
+  for (let monthOffset = NUM_MONTHS - 1; monthOffset >= 0; monthOffset--) {
+    const monthStart = today.subtract(monthOffset, 'month').startOf('month');
+    const monthEnd = monthStart.endOf('month');
+    const monthKey = monthStart.format('YYYY-MM');
+    const monthNum = monthStart.month() + 1;
 
-  const billsCreated = [];
-  const expensesCreated = [];
-  const transactionsCreated = [];
+    console.log(`📅 Generating data for ${monthStart.format('MMMM YYYY')}...`);
 
-  // ------------------ 3) GENERATE 90 DAYS OF DATA ------------------
-  for (let i = 0; i < 90; i++) {
-    const day = today.subtract(i, 'day');
+    // 1. Create monthly rent bill (1st of month)
+    const rentBill = await Bill.create({
+      flatId: flat._id,
+      title: `Monthly Rent - ${monthStart.format('MMMM YYYY')}`,
+      vendor: 'Property Owner',
+      totalAmount: RENT,
+      dueDate: monthStart.add(3, 'day').toDate(),
+      createdBy: adminUser._id,
+      category: 'rent',
+      status: 'paid',
+      notes: TEST_TAG
+    });
+    allBills.push(rentBill);
 
-    // ---- Bills ----
-    const isRentDay = day.date() === 1;
-    const billCategories = ['rent', 'utilities', 'internet', 'groceries', 'cleaning', 'maintenance', 'furniture', 'other'];
-    const numBills = isRentDay ? 1 : randBetween(0, 1);
-
-    for (let b = 0; b < numBills; b++) {
-      const category = isRentDay ? 'rent' : billCategories[randBetween(0, billCategories.length - 1)];
-      const amount = category === 'rent' ? RENT : randBetween(200, 4000);
-
-      const bill = await Bill.create({
+    // Create bill splits and transactions for rent
+    const rentPerPerson = Math.round(RENT / users.length);
+    for (const user of users) {
+      const split = await BillSplit.create({
+        billId: rentBill._id,
         flatId: flat._id,
-        title: `${category} bill ${TEST_TAG}`,
-        vendor: 'autoVendor',
-        totalAmount: amount,
-        dueDate: day.add(3, 'day').toDate(),
-        createdBy: adminUser._id,
-        notes: TEST_TAG,
-        category,
-        status: 'pending'
+        userId: user._id,
+        amount: rentPerPerson,
+        status: 'paid',
+        paidAt: monthStart.add(rand(1, 5), 'day').toDate(),
+        note: `Rent split ${TEST_TAG}`
       });
 
-      // Splits
-      const perMember = Math.round(amount / memberIds.length);
-      for (const uid of memberIds) {
-        await BillSplit.create({ billId: bill._id, userId: uid, amount: perMember, status: 'owed' });
-      }
+      const txn = await Transaction.create({
+        flatId: flat._id,
+        type: 'payment',
+        amount: rentPerPerson,
+        fromUserId: user._id,
+        toUserId: adminUser._id,
+        billId: rentBill._id,
+        note: `Rent payment ${TEST_TAG}`,
+        paymentMethod: 'bank_transfer',
+        status: 'completed',
+        createdAt: split.paidAt
+      });
+      allTransactions.push(txn);
+    }
 
-      billsCreated.push(bill);
+    // 2. Generate category-based expenses throughout the month
+    for (const [category, pattern] of Object.entries(EXPENSE_PATTERNS)) {
+      const seasonalMultiplier = pattern.seasonal[monthNum] || 1.0;
+      const monthlyTarget = pattern.baseAmount * seasonalMultiplier;
+      
+      for (let i = 0; i < pattern.frequency; i++) {
+        const dayOfMonth = rand(1, monthEnd.date());
+        const expenseDate = monthStart.add(dayOfMonth, 'day');
+        
+        // Skip future dates
+        if (expenseDate.isAfter(today)) continue;
 
-      // Mark some splits paid
-      const splits = await BillSplit.find({ billId: bill._id });
-      for (const s of splits) {
-        if (Math.random() < 0.6) {
+        // Calculate amount with variance
+        const baseAmount = monthlyTarget / pattern.frequency;
+        const variance = baseAmount * pattern.variance;
+        const amount = Math.round(baseAmount + (Math.random() * 2 - 1) * variance);
+
+        const paidBy = randomChoice(users);
+        const vendor = randomChoice(pattern.vendors);
+
+        const expense = await Expense.create({
+          flatId: flat._id,
+          createdBy: paidBy._id,
+          title: `${vendor} - ${category.charAt(0).toUpperCase() + category.slice(1)}`,
+          description: `${category} expense from ${vendor}`,
+          totalAmount: amount,
+          category: category,
+          splitMethod: 'equal',
+          status: 'settled',
+          participants: users.map(u => ({
+            userId: u._id,
+            name: u.userName,
+            amount: Math.round(amount / users.length),
+            isPaid: true
+          })),
+          notes: TEST_TAG,
+          createdAt: expenseDate.toDate()
+        });
+        allExpenses.push(expense);
+
+        // Create transactions for expense settlements
+        const shareAmount = Math.round(amount / users.length);
+        for (const user of users) {
+          if (user._id.toString() === paidBy._id.toString()) continue;
+
           const txn = await Transaction.create({
             flatId: flat._id,
             type: 'payment',
-            amount: s.amount,
-            fromUserId: s.userId,
-            toUserId: adminUser._id,
-            note: TEST_TAG
+            amount: shareAmount,
+            fromUserId: user._id,
+            toUserId: paidBy._id,
+            note: `${category} expense settlement ${TEST_TAG}`,
+            paymentMethod: Math.random() < 0.7 ? 'upi' : 'cash',
+            status: 'completed',
+            createdAt: expenseDate.add(rand(1, 3), 'day').toDate()
           });
-          s.status = 'paid';
-          s.paidAt = day.toDate();
-          s.paymentId = txn._id;
-          await s.save();
-          transactionsCreated.push(txn);
+          allTransactions.push(txn);
         }
       }
-
-      await bill.updateStatus();
-      await bill.save();
     }
 
-    // ---- Expenses ----
-    const expenseCategories = ['groceries', 'utilities', 'internet', 'cleaning', 'maintenance', 'furniture', 'other'];
-    const numExpenses = randBetween(0, 2);
-
-    for (let e = 0; e < numExpenses; e++) {
-      const category = expenseCategories[randBetween(0, expenseCategories.length - 1)];
-      const amount = randBetween(100, 3000);
-
-      const participants = memberIds.map(uid => ({
-        userId: uid,
-        name: uid.toString(),
-        amount: Math.round(amount / memberIds.length),
-        isPaid: Math.random() < 0.5
-      }));
-
-      const expense = await Expense.create({
-        flatId: flat._id,
-        createdBy: adminUser._id,
-        title: `Expense ${category} ${TEST_TAG}`,
-        description: 'auto-generated',
-        totalAmount: amount,
-        category,
-        splitMethod: 'equal',
-        participants,
-        notes: TEST_TAG
-      });
-
-      expensesCreated.push(expense);
-
-      // expense payments
-      for (const p of participants.filter(p => p.isPaid)) {
-        const txn = await Transaction.create({
-          flatId: flat._id,
-          type: 'payment',
-          amount: p.amount,
-          fromUserId: p.userId,
-          toUserId: adminUser._id,
-          note: TEST_TAG
-        });
-        transactionsCreated.push(txn);
-      }
-    }
+    console.log(`  ✅ Created ${allExpenses.filter(e => dayjs(e.createdAt).format('YYYY-MM') === monthKey).length} expenses`);
   }
 
-  // ------------------ 4) BUDGET SNAPSHOTS ------------------
-  for (let m = 0; m < 3; m++) {
-    const month = today.subtract(m, 'month').format('YYYY-MM');
-    const snap = await BudgetSnapshot.getOrCreate(flat._id, month, MONTHLY_BUDGET);
-    snap.notes = TEST_TAG;
-    snap.actualSpent = randBetween(30000, 90000);
-    await snap.save();
+  console.log();
+
+  // 3. Create budget snapshots with accurate calculations
+  console.log('📊 Creating budget snapshots...\n');
+  for (let monthOffset = NUM_MONTHS - 1; monthOffset >= 0; monthOffset--) {
+    const monthStart = today.subtract(monthOffset, 'month').startOf('month');
+    const monthEnd = monthStart.endOf('month');
+    const month = monthStart.format('YYYY-MM');
+
+    const monthBills = allBills.filter(b => dayjs(b.dueDate).format('YYYY-MM') === month);
+    const monthExpenses = allExpenses.filter(e => dayjs(e.createdAt).format('YYYY-MM') === month);
+
+    const billsTotal = monthBills.reduce((sum, b) => sum + b.totalAmount, 0);
+    const expensesTotal = monthExpenses.reduce((sum, e) => sum + e.totalAmount, 0);
+    const actualSpent = billsTotal + expensesTotal;
+
+    // Category breakdown
+    const categoryBreakdown = {};
+    monthBills.forEach(b => {
+      categoryBreakdown[b.category] = (categoryBreakdown[b.category] || 0) + b.totalAmount;
+    });
+    monthExpenses.forEach(e => {
+      categoryBreakdown[e.category] = (categoryBreakdown[e.category] || 0) + e.totalAmount;
+    });
+
+    await BudgetSnapshot.create({
+      flatId: flat._id,
+      month,
+      budgetAmount: MONTHLY_BUDGET,
+      predictedAmount: MONTHLY_BUDGET,
+      actualSpent,
+      categoryBreakdown,
+      notes: TEST_TAG
+    });
+
+    console.log(`  ${month}: ₹${actualSpent.toLocaleString('en-IN')} spent (${Object.keys(categoryBreakdown).length} categories)`);
   }
 
-  // ------------------ 5) UPDATE FLAT STATS ------------------
-  flat.stats.totalExpenses = await Expense.countDocuments({ flatId: flat._id });
-  flat.stats.totalPayments = await Transaction.countDocuments({ flatId: flat._id });
-  await flat.save();
-
-  console.log('--- DONE ---');
-  console.log('Bills:', billsCreated.length);
-  console.log('Expenses:', expensesCreated.length);
-  console.log('Transactions:', transactionsCreated.length);
-  console.log('Snapshots: 3');
+  console.log();
+  console.log('🎉 Seed Complete!');
+  console.log('================');
+  console.log(`📊 Bills: ${allBills.length}`);
+  console.log(`💰 Expenses: ${allExpenses.length}`);
+  console.log(`💳 Transactions: ${allTransactions.length}`);
+  console.log(`📈 Budget Snapshots: ${NUM_MONTHS}`);
+  console.log(`👥 Users: ${users.length}`);
+  console.log(`🏢 Flats: 1`);
 }
 
 (async () => {
   try {
     await connect();
-
+    
     if (process.argv.includes('--cleanup')) {
       await cleanup();
       process.exit(0);
     }
 
+    await cleanup();
     await seed();
     process.exit(0);
-  } catch (err) {
-    console.error('Error:', err);
+  } catch (error) {
+    console.error('❌ Seed failed:', error);
     process.exit(1);
   }
 })();

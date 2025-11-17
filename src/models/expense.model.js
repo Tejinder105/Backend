@@ -5,7 +5,7 @@ const expenseSchema = new Schema(
         flatId: {
             type: Schema.Types.ObjectId,
             ref: "Flat",
-            required: false, // Will be true after migration
+            required: true, // ✅ Now required for all new expenses
             index: true
         },
         createdBy: {

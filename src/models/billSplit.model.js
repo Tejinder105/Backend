@@ -8,6 +8,12 @@ const billSplitSchema = new Schema(
             required: true,
             index: true
         },
+        flatId: {
+            type: Schema.Types.ObjectId,
+            ref: "Flat",
+            required: true,
+            index: true
+        },
         userId: {
             type: Schema.Types.ObjectId,
             ref: "User",
@@ -42,9 +48,9 @@ const billSplitSchema = new Schema(
 // Compound indexes for efficient queries
 billSplitSchema.index({ billId: 1, userId: 1 }, { unique: true }); // Prevent duplicate splits
 billSplitSchema.index({ userId: 1, status: 1 });
+billSplitSchema.index({ userId: 1, flatId: 1, status: 1 }); // CRITICAL: For getUserDues queries
 billSplitSchema.index({ billId: 1, status: 1 }); // Added for batch status checks
 billSplitSchema.index({ status: 1, paidAt: -1 }); // Added for payment history queries
-billSplitSchema.index({ userId: 1, status: 1, billId: 1 }); // Optimized for user dues queries
 
 // Method to mark split as paid
 billSplitSchema.methods.markPaid = async function(transactionId = null) {

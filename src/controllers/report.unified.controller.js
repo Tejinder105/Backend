@@ -8,6 +8,7 @@ import { asyncHandler } from "../Utils/asyncHandler.js";
 import { ApiError } from "../Utils/ApiError.js";
 import { ApiResponse } from "../Utils/ApiResponse.js";
 import reportService from "../services/report.service.js";
+import PDFDocument from 'pdfkit';
 import * as FileSystem from 'fs/promises';
 import path from 'path';
 
@@ -38,18 +39,18 @@ export const getCompleteReport = asyncHandler(async (req, res) => {
 
 /**
  * @route GET /api/v2/reports/flats/:flatId/forecast
- * @desc Get ML-powered budget forecast (optimized)
+ * @desc Get ML-powered budget forecast - predicts ONLY next month
  * @access Private
- * @query months - Number of months to forecast (default: 3)
  */
 export const getForecast = asyncHandler(async (req, res) => {
     const { flatId } = req.params;
-    const { months = 3 } = req.query;
+    // Fixed to only predict next month (1 month)
+    const months = 1;
 
     const forecast = await reportService.getForecast(
         flatId,
         req.user._id,
-        parseInt(months)
+        months
     );
 
     return res.status(200).json(
@@ -101,10 +102,10 @@ export const invalidateCache = asyncHandler(async (req, res) => {
 
 /**
  * @route GET /api/v2/reports/flats/:flatId/export
- * @desc Export report as CSV (improved format)
+ * @desc Export report as CSV or PDF
  * @access Private
  * @query month - Month in YYYY-MM format
- * @query format - 'csv' or 'json' (default: 'json')
+ * @query format - 'csv', 'pdf', or 'json' (default: 'json')
  */
 export const exportReport = asyncHandler(async (req, res) => {
     const { flatId } = req.params;
@@ -115,6 +116,120 @@ export const exportReport = asyncHandler(async (req, res) => {
         month,
         req.user._id
     );
+
+    if (format === 'pdf') {
+        const doc = new PDFDocument({ margin: 50 });
+
+        // Set PDF headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=report-${report.month}.pdf`);
+        
+        // Pipe PDF to response
+        doc.pipe(res);
+
+        // Title
+        doc.fontSize(24).font('Helvetica-Bold').text('Smart Rent', { align: 'center' });
+        doc.fontSize(18).text('Financial Report', { align: 'center' });
+        doc.moveDown(0.5);
+        
+        // Report details
+        doc.fontSize(12).font('Helvetica').text(`Month: ${report.month}`, { align: 'center' });
+        doc.text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
+        doc.moveDown(2);
+
+        // Summary Section
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#3b82f6').text('Summary');
+        doc.moveDown(0.5);
+        
+        const summaryY = doc.y;
+        doc.fontSize(11).font('Helvetica').fillColor('black');
+        doc.rect(50, summaryY, 495, 80).fillAndStroke('#f0f9ff', '#3b82f6');
+        
+        doc.fontSize(12).font('Helvetica-Bold').fillColor('#1e40af')
+           .text(`Total Spent: ₹${report.summary.totalSpent.toFixed(2)}`, 70, summaryY + 15);
+        doc.text(`Budget: ₹${report.summary.budget.toFixed(2)}`, 70, summaryY + 35);
+        doc.text(`Remaining: ₹${report.summary.budgetRemaining.toFixed(2)}`, 70, summaryY + 55);
+        
+        doc.text(`${report.summary.percentageUsed.toFixed(1)}% Used`, 350, summaryY + 15);
+        doc.text(report.summary.isOverBudget ? 'Over Budget' : 'On Track', 350, summaryY + 35, {
+            color: report.summary.isOverBudget ? '#dc2626' : '#16a34a'
+        });
+        
+        doc.moveDown(6);
+
+        // Category Breakdown
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#3b82f6').text('Category Breakdown');
+        doc.moveDown(0.5);
+        
+        const tableTop = doc.y;
+        const colWidths = [150, 100, 80, 80, 85];
+        const headers = ['Category', 'Amount', 'Count', 'Average', 'Percentage'];
+        
+        // Table header
+        doc.fontSize(11).font('Helvetica-Bold').fillColor('white');
+        doc.rect(50, tableTop, 495, 25).fill('#3b82f6');
+        let xPos = 60;
+        headers.forEach((header, i) => {
+            doc.text(header, xPos, tableTop + 7, { width: colWidths[i] });
+            xPos += colWidths[i];
+        });
+        
+        // Table rows
+        doc.font('Helvetica').fillColor('black');
+        let yPos = tableTop + 30;
+        report.categoryBreakdown.slice(0, 10).forEach((cat, index) => {
+            if (yPos > 700) {
+                doc.addPage();
+                yPos = 50;
+            }
+            
+            const bgColor = index % 2 === 0 ? '#f9fafb' : 'white';
+            doc.rect(50, yPos, 495, 25).fill(bgColor);
+            
+            xPos = 60;
+            doc.fillColor('black')
+               .text(cat.category.toUpperCase(), xPos, yPos + 7, { width: colWidths[0] });
+            xPos += colWidths[0];
+            doc.text(`₹${cat.totalAmount.toFixed(2)}`, xPos, yPos + 7, { width: colWidths[1] });
+            xPos += colWidths[1];
+            doc.text(cat.count.toString(), xPos, yPos + 7, { width: colWidths[2] });
+            xPos += colWidths[2];
+            doc.text(`₹${cat.avgAmount.toFixed(2)}`, xPos, yPos + 7, { width: colWidths[3] });
+            xPos += colWidths[3];
+            doc.text(`${cat.percentage.toFixed(1)}%`, xPos, yPos + 7, { width: colWidths[4] });
+            
+            yPos += 25;
+        });
+        
+        doc.moveDown(2);
+
+        // Recent Transactions
+        if (yPos > 650) doc.addPage();
+        
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#3b82f6').text('Recent Transactions');
+        doc.moveDown(0.5);
+        
+        doc.fontSize(10).font('Helvetica').fillColor('black');
+        report.recentActivity.slice(0, 15).forEach((txn) => {
+            if (doc.y > 700) doc.addPage();
+            
+            const date = new Date(txn.dueDate || txn.createdAt).toLocaleDateString();
+            doc.text(`${date} - ${txn.title}`, 60);
+            doc.text(`₹${txn.totalAmount.toFixed(2)} (${txn.status})`, 400, doc.y - 12, { align: 'right' });
+            doc.moveDown(0.3);
+        });
+
+        // Footer
+        const pageCount = doc.bufferedPageRange().count;
+        for (let i = 0; i < pageCount; i++) {
+            doc.switchToPage(i);
+            doc.fontSize(9).fillColor('gray')
+               .text(`Page ${i + 1} of ${pageCount}`, 50, 750, { align: 'center' });
+        }
+
+        doc.end();
+        return;
+    }
 
     if (format === 'csv') {
         // Generate enhanced CSV with multiple sections

@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from prophet import Prophet
 import pandas as pd
 import numpy as np
@@ -11,6 +12,7 @@ warnings.filterwarnings('ignore')
 logging.getLogger('prophet').setLevel(logging.WARNING)
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 def prepare_data(historical_data):
     """
@@ -44,19 +46,29 @@ def prepare_data(historical_data):
 
 def train_prophet_model(df):
     """
-    Train Prophet model on historical data
+    Train Prophet model on historical data with enhanced parameters
     """
     if df is None or len(df) < 10:
         return None
     
-    # Initialize Prophet with reasonable parameters for budget forecasting
+    # Initialize Prophet with optimized parameters for budget forecasting
     model = Prophet(
+        growth='linear',  # Linear growth for consistent spending patterns
         yearly_seasonality=True,
         weekly_seasonality=False,
         daily_seasonality=False,
-        changepoint_prior_scale=0.05,  # Less sensitive to changes
-        seasonality_prior_scale=10.0,  # Moderate seasonality
-        interval_width=0.8  # 80% confidence interval
+        changepoint_prior_scale=0.08,  # Increased sensitivity to detect spending changes
+        seasonality_prior_scale=12.0,  # Stronger seasonality for monthly patterns
+        seasonality_mode='multiplicative',  # Better for percentage-based variations
+        interval_width=0.85,  # 85% confidence interval for better accuracy
+        changepoint_range=0.9  # Use 90% of data for changepoint detection
+    )
+    
+    # Add monthly seasonality explicitly for better monthly pattern detection
+    model.add_seasonality(
+        name='monthly',
+        period=30.5,
+        fourier_order=5
     )
     
     model.fit(df)
@@ -78,12 +90,18 @@ def aggregate_daily_to_monthly(forecast_df):
 def calculate_confidence(yhat, yhat_lower, yhat_upper):
     """
     Calculate confidence level based on prediction interval width
+    Enhanced algorithm for better confidence assessment
     """
-    interval_width = (yhat_upper - yhat_lower) / yhat
+    if yhat <= 0:
+        return 'low'
     
-    if interval_width < 0.2:  # Within 20%
+    interval_width = (yhat_upper - yhat_lower) / yhat
+    relative_uncertainty = abs(yhat_upper - yhat_lower) / (2 * yhat)
+    
+    # More granular confidence levels
+    if interval_width < 0.15 or relative_uncertainty < 0.075:  # Within 15%
         return 'high'
-    elif interval_width < 0.4:  # Within 40%
+    elif interval_width < 0.35 or relative_uncertainty < 0.175:  # Within 35%
         return 'medium'
     else:
         return 'low'
@@ -187,11 +205,11 @@ def predict():
             )
             
             predictions.append({
-                'month': month_data['month'],
-                'predictedAmount': max(0, round(month_data['yhat'], 2)),
-                'lowerBound': max(0, round(month_data['yhat_lower'], 2)),
-                'upperBound': round(month_data['yhat_upper'], 2),
-                'confidence': confidence
+                'month': str(month_data['month']),
+                'predictedAmount': float(max(0, round(month_data['yhat'], 2))),
+                'lowerBound': float(max(0, round(month_data['yhat_lower'], 2))),
+                'upperBound': float(round(month_data['yhat_upper'], 2)),
+                'confidence': str(confidence)
             })
         
         # Next month prediction (most important)
@@ -210,17 +228,17 @@ def predict():
             'ds': pd.date_range(start=datetime.now(), periods=remaining_days, freq='D')
         })
         current_forecast = model.predict(current_future)
-        remaining_spending = current_forecast['yhat'].sum()
+        remaining_spending = float(current_forecast['yhat'].sum())
         
         # ML-based projection
-        ml_projection = current_month_spent + max(0, remaining_spending)
+        ml_projection = float(current_month_spent + max(0, remaining_spending))
         
         # Weighted average (70% ML, 30% simple rate)
-        final_projection = (0.7 * ml_projection) + (0.3 * simple_projection)
+        final_projection = float((0.7 * ml_projection) + (0.3 * simple_projection))
         
         # Over-budget detection
-        is_likely_over_budget = final_projection > monthly_budget if monthly_budget > 0 else False
-        budget_difference = final_projection - monthly_budget if monthly_budget > 0 else 0
+        is_likely_over_budget = bool(final_projection > monthly_budget) if monthly_budget > 0 else False
+        budget_difference = float(final_projection - monthly_budget) if monthly_budget > 0 else 0.0
         
         # Calculate overall confidence based on data quantity
         data_months = len(historical_data)
@@ -235,7 +253,7 @@ def predict():
         trend = detect_trend(historical_data)
         
         # Generate explanation
-        avg_spending = sum(d['spent'] for d in historical_data) / len(historical_data)
+        avg_spending = float(sum(d['spent'] for d in historical_data) / len(historical_data))
         explanation = f"ML model trained on {data_months} months of data. "
         explanation += f"Average historical spending: ₹{round(avg_spending)}. "
         explanation += f"Trend detected: {trend}. "
@@ -310,4 +328,17 @@ def test():
         return response
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    print("Starting ML Budget Forecasting Service...")
+    print("Service will be available at http://localhost:5001")
+    print("Press Ctrl+C to stop")
+    
+    try:
+        from waitress import serve
+        serve(app, host='0.0.0.0', port=5001, threads=4)
+    except ImportError:
+        print("Waitress not found, using Flask development server")
+        app.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        import traceback
+        traceback.print_exc()

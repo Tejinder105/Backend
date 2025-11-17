@@ -54,7 +54,10 @@ class ExpenseService {
             let expense;
             let billSplits = [];
 
+            console.log('🔵 [createExpense] Type:', type, 'Participants:', participants.length);
+
             if (type === 'shared') {
+                console.log('🔵 [createExpense] Creating Bill with BillSplits...');
                 // Create as Bill with BillSplits
                 const bill = await Bill.create([{
                     flatId,
@@ -70,21 +73,30 @@ class ExpenseService {
                     imageUrl
                 }], { session });
 
+                console.log('🔵 [createExpense] Bill created:', bill[0]._id);
+
                 // Create splits
                 const amountPerPerson = totalAmount / participants.length;
                 
                 for (const participant of participants) {
-                    const split = await BillSplit.create([{
+                    const splitData = {
                         billId: bill[0]._id,
+                        flatId: flatId,  // ✅ CRITICAL: Add flatId for getUserDues query
                         userId: participant.userId,
                         amount: splitMethod === 'equal' 
                             ? Math.round(amountPerPerson * 100) / 100
                             : participant.amount,
                         status: 'owed'
-                    }], { session });
+                    };
+                    console.log('🔵 [createExpense] Creating BillSplit:', splitData);
                     
+                    const split = await BillSplit.create([splitData], { session });
+                    
+                    console.log('🔵 [createExpense] BillSplit created:', split[0]._id, 'for user:', split[0].userId);
                     billSplits.push(split[0]);
                 }
+
+                console.log('🔵 [createExpense] Total BillSplits created:', billSplits.length);
 
                 // Update bill status
                 await bill[0].updateStatus();
@@ -403,6 +415,8 @@ class ExpenseService {
      * @returns {Promise<Object>} User's pending dues
      */
     async getUserDues(userId, flatId) {
+        console.log('🔵 [ExpenseService] getUserDues called:', { userId, flatId });
+        
         // Verify access
         const flat = await Flat.findById(flatId);
         if (!flat) {
@@ -428,8 +442,12 @@ class ExpenseService {
         })
         .lean();
 
+        console.log('🔵 [ExpenseService] Raw billDues count:', billDues.length);
+
         // Filter out any dues where billId is null (bill not in this flat)
         const filteredBillDues = billDues.filter(due => due.billId !== null);
+        
+        console.log('🔵 [ExpenseService] Filtered billDues count:', filteredBillDues.length);
 
         // Get user's pending expense participations
         const expenseDues = await Expense.find({
@@ -441,6 +459,17 @@ class ExpenseService {
         .populate('flatId', 'name')
         .lean();
 
+        console.log('🔵 [ExpenseService] Raw expenseDues count:', expenseDues.length);
+        console.log('🔵 [ExpenseService] ExpenseDues details:', JSON.stringify(expenseDues.map(e => ({
+            id: e._id,
+            title: e.title,
+            participants: e.participants.map(p => ({
+                userId: p.userId,
+                isPaid: p.isPaid,
+                amount: p.amount
+            }))
+        })), null, 2));
+
         // Extract only the user's participation from each expense
         const filteredExpenseDues = expenseDues
             .map(expense => {
@@ -450,8 +479,16 @@ class ExpenseService {
                 
                 // If user has already paid, skip this expense
                 if (!userParticipation) {
+                    console.log('⚠️ [ExpenseService] No unpaid participation for expense:', expense._id);
                     return null;
                 }
+                
+                console.log('✅ [ExpenseService] Found unpaid participation:', {
+                    expenseId: expense._id,
+                    userId: userParticipation.userId,
+                    amount: userParticipation.amount,
+                    isPaid: userParticipation.isPaid
+                });
                 
                 return {
                     _id: expense._id,
@@ -468,11 +505,13 @@ class ExpenseService {
             })
             .filter(due => due !== null); // Remove null entries
 
+        console.log('🔵 [ExpenseService] Filtered expenseDues count:', filteredExpenseDues.length);
+
         // Calculate totals
         const totalBillDue = filteredBillDues.reduce((sum, due) => sum + due.amount, 0);
         const totalExpenseDue = filteredExpenseDues.reduce((sum, due) => sum + due.amount, 0);
 
-        return {
+        const result = {
             billDues: filteredBillDues,
             expenseDues: filteredExpenseDues,
             totalBillDue,
@@ -480,6 +519,14 @@ class ExpenseService {
             totalDue: totalBillDue + totalExpenseDue,
             count: filteredBillDues.length + filteredExpenseDues.length
         };
+
+        console.log('✅ [ExpenseService] getUserDues result:', {
+            billDuesCount: result.billDues.length,
+            expenseDuesCount: result.expenseDues.length,
+            totalDue: result.totalDue
+        });
+
+        return result;
     }
 
     /**
@@ -604,20 +651,19 @@ class ExpenseService {
                 }], { session });
                 console.log('🔵 Transaction created:', transaction[0]._id);
 
-                // Mark split as paid
+                // Mark as paid WITH session for atomic update
                 billSplit.status = 'paid';
                 billSplit.paidAt = new Date();
+                billSplit.transactionId = transaction[0]._id;
                 await billSplit.save({ session });
-                console.log('🔵 BillSplit marked as paid');
-
-                // Check if all splits are paid and update bill status
-                const allSplits = await BillSplit.find({ billId: bill._id }).session(session);
-                const allPaid = allSplits.every(split => split.status === 'paid');
-                if (allPaid) {
-                    bill.status = 'settled';
-                    bill.settledAt = new Date();
-                }
-                await bill.save({ session });
+                console.log('🔵 BillSplit marked as paid, new status:', billSplit.status);
+                
+                // Verify the update by querying it back
+                const verifyUpdate = await BillSplit.findById(billSplit._id).session(session);
+                console.log('🔵 Verification - BillSplit status in DB:', verifyUpdate?.status);
+                
+                // Update bill status in the same transaction
+                await bill.updateStatus({ session });
                 console.log('🔵 Bill status updated');
 
                 // Update budget snapshot
@@ -732,33 +778,240 @@ class ExpenseService {
     }
 
     /**
-     * Private helper: Update budget snapshot without redundant queries
+     * Private helper: Update budget snapshot with actual spending
      * @param {ObjectId} flatId - Flat ID
      * @param {String} month - Month in YYYY-MM format
      * @param {Session} session - Mongoose session
      * @private
      */
     async _updateBudgetSnapshot(flatId, month, session) {
+        console.log('💰 [_updateBudgetSnapshot] Updating budget for flat:', flatId, 'month:', month);
+        
         const flat = await Flat.findById(flatId).session(session);
-        if (!flat || flat.monthlyBudget === 0) return;
+        if (!flat || flat.monthlyBudget === 0) {
+            console.log('💰 [_updateBudgetSnapshot] No budget set for flat');
+            return;
+        }
 
         let snapshot = await BudgetSnapshot.findOne({ flatId, month }).session(session);
         
         if (!snapshot) {
+            console.log('💰 [_updateBudgetSnapshot] Creating new snapshot');
             snapshot = new BudgetSnapshot({
                 flatId,
                 month,
                 budgetAmount: flat.monthlyBudget,
-                predictedAmount: flat.monthlyBudget
+                predictedAmount: flat.monthlyBudget,
+                actualSpent: 0
             });
         }
 
-        // We'll update actualSpent when financial summary is queried
-        // to avoid redundant calculations
+        // Calculate actual spent from completed transactions this month
+        const startDate = new Date(month + '-01');
+        const endDate = new Date(startDate);
+        endDate.setMonth(endDate.getMonth() + 1);
+        
+        const transactions = await Transaction.find({
+            flatId,
+            type: 'payment',
+            status: 'completed',
+            createdAt: { $gte: startDate, $lt: endDate }
+        }).session(session);
+        
+        const actualSpent = transactions.reduce((sum, txn) => sum + txn.amount, 0);
+        
+        console.log('💰 [_updateBudgetSnapshot] Calculated spending:', {
+            transactions: transactions.length,
+            actualSpent: actualSpent,
+            budget: flat.monthlyBudget
+        });
+
+        // Update snapshot
         snapshot.budgetAmount = flat.monthlyBudget;
+        snapshot.actualSpent = actualSpent;
+        snapshot.predictedAmount = flat.monthlyBudget; // Can be enhanced with ML prediction
+        
         await snapshot.save({ session });
+        console.log('💰 [_updateBudgetSnapshot] Budget snapshot updated');
 
         return snapshot;
+    }
+
+    /**
+     * Get user's pending dues for a flat
+     * @param {ObjectId} userId - User ID
+     * @param {ObjectId} flatId - Flat ID
+     * @returns {Promise<Object>} User's pending dues
+     */
+    async getUserDues(userId, flatId) {
+        try {
+            console.log('📋 [getUserDues] ===== START =====');
+            console.log('📋 [getUserDues] Fetching dues for user:', userId, 'flat:', flatId);
+
+            // Get pending bill splits (status = 'owed')
+            // Try with flatId first, if no results, fetch all and filter by populated billId.flatId
+            const query = {
+                userId,
+                flatId,
+                status: 'owed'
+            };
+            console.log('📋 [getUserDues] Query:', JSON.stringify(query));
+            
+            let billSplits = await BillSplit.find(query)
+            .populate({
+                path: 'billId',
+                select: 'title description vendor totalAmount dueDate category createdAt flatId',
+                populate: {
+                    path: 'createdBy',
+                    select: 'userName email'
+                }
+            })
+            .sort({ dueDate: 1 })
+            .lean();
+
+            console.log('📋 [getUserDues] Found with flatId:', billSplits.length);
+            
+            // Debug: Log all splits for this user regardless of status
+            const allUserSplits = await BillSplit.find({ userId }).lean();
+            console.log('📋 [getUserDues] Total splits for user (all statuses):', allUserSplits.length);
+            allUserSplits.forEach(split => {
+                console.log('📋 [getUserDues] Split:', {
+                    billId: split.billId,
+                    flatId: split.flatId,
+                    status: split.status,
+                    amount: split.amount,
+                    paidAt: split.paidAt
+                });
+            });
+
+            // Fallback: If flatId field doesn't exist in old records, fetch without flatId and filter
+            if (billSplits.length === 0) {
+                console.log('📋 [getUserDues] No splits found with flatId, trying without flatId filter...');
+                const allUserSplits = await BillSplit.find({
+                    userId,
+                    status: 'owed'
+                })
+                .populate({
+                    path: 'billId',
+                    select: 'title description vendor totalAmount dueDate category createdAt flatId',
+                    populate: {
+                        path: 'createdBy',
+                        select: 'userName email'
+                    }
+                })
+                .sort({ dueDate: 1 })
+                .lean();
+                
+                // Filter by bill's flatId
+                billSplits = allUserSplits.filter(split => 
+                    split.billId && split.billId.flatId?.toString() === flatId.toString()
+                );
+                console.log('📋 [getUserDues] Filtered', billSplits.length, 'splits by bill flatId');
+            }
+
+            console.log('📋 [getUserDues] Found', billSplits.length, 'pending bill splits');
+
+            // Get pending split expenses where THIS SPECIFIC USER hasn't paid
+            // Use $elemMatch to filter by userId AND isPaid in same array element
+            const expenses = await Expense.find({
+                flatId,
+                participants: {
+                    $elemMatch: {
+                        userId: userId,
+                        isPaid: false
+                    }
+                },
+                status: { $in: ['pending', 'active'] }  // Only active expenses
+            })
+            .populate('createdBy', 'userName email')
+            .sort({ createdAt: -1 })
+            .lean();
+
+            console.log('📋 [getUserDues] Found', expenses.length, 'pending split expenses');
+            
+            // Debug: Log each expense with user's payment status
+            expenses.forEach(exp => {
+                const userPart = exp.participants.find(p => p.userId.toString() === userId.toString());
+                console.log('📋 [getUserDues] Expense:', exp.title, '- User isPaid:', userPart?.isPaid);
+            });
+
+            // Format bill dues - ADD billId field for frontend compatibility
+            const billDues = billSplits
+                .filter(split => split.billId)  // Filter out any orphaned splits
+                .map(split => ({
+                    _id: split.billId._id,
+                    billId: split.billId._id,  // CRITICAL: Frontend checks for this
+                    expenseType: 'shared',
+                    title: split.billId.title,
+                    description: split.billId.description,
+                    vendor: split.billId.vendor,
+                    category: split.billId.category,
+                    totalAmount: split.billId.totalAmount,
+                    userAmount: split.amount,
+                    dueDate: split.billId.dueDate,
+                    createdBy: split.billId.createdBy,
+                    createdAt: split.billId.createdAt
+                }));
+
+            // Format expense dues - ADD expenseId field
+            const expenseDues = expenses.map(expense => {
+                const userParticipant = expense.participants.find(
+                    p => p.userId.toString() === userId.toString()
+                );
+                
+                console.log('📋 [getUserDues] Mapping expense:', {
+                    title: expense.title,
+                    userParticipantFound: !!userParticipant,
+                    participantAmount: userParticipant?.amount,
+                    participantShare: userParticipant?.share,
+                    allParticipants: expense.participants.map(p => ({
+                        userId: p.userId,
+                        amount: p.amount,
+                        share: p.share,
+                        isPaid: p.isPaid
+                    }))
+                });
+                
+                return {
+                    _id: expense._id,
+                    expenseId: expense._id,  // CRITICAL: Frontend checks for this
+                    expenseType: 'split',
+                    title: expense.title,
+                    description: expense.description,
+                    category: expense.category,
+                    totalAmount: expense.totalAmount,
+                    userAmount: userParticipant?.amount || 0,
+                    createdBy: expense.createdBy,
+                    createdAt: expense.createdAt
+                };
+            });
+
+            // Calculate totals
+            const totalBillDue = billDues.reduce((sum, bill) => sum + bill.userAmount, 0);
+            const totalExpenseDue = expenseDues.reduce((sum, exp) => sum + exp.userAmount, 0);
+            const totalDue = totalBillDue + totalExpenseDue;
+
+            console.log('📋 [getUserDues] Totals - Bills:', totalBillDue, 'Expenses:', totalExpenseDue, 'Total:', totalDue);
+
+            const result = {
+                billDues,
+                expenseDues,
+                totalBillDue,
+                totalExpenseDue,
+                totalDue
+            };
+            
+            // Log the exact structure being returned
+            if (expenseDues.length > 0) {
+                console.log('📋 [getUserDues] First expense due structure:', JSON.stringify(expenseDues[0], null, 2));
+            }
+            
+            return result;
+
+        } catch (error) {
+            console.error('❌ [getUserDues] Error:', error);
+            throw error;
+        }
     }
 
     /**

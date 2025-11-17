@@ -36,9 +36,8 @@ router.get('/flats/:flatId/dashboard', getDashboardSummary);
 
 /**
  * @route GET /api/v2/reports/flats/:flatId/forecast
- * @desc Get ML-powered budget forecast (optimized single-query)
- * @query months - Number of months to forecast (default: 3)
- * @returns Forecast predictions with confidence levels
+ * @desc Get ML-powered budget forecast - predicts ONLY next month
+ * @returns Next month prediction with current month tracking
  */
 router.get('/flats/:flatId/forecast', getForecast);
 

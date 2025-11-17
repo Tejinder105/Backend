@@ -7,6 +7,8 @@ import { Router } from 'express';
 import {
     createExpense,
     recordPayment,
+    recordBulkPayment,
+    getUserDues,
     getFinancialSummary,
     getExpenseHistory
 } from '../controllers/expense.unified.controller.js';
@@ -37,17 +39,30 @@ router.post('/', validate(createExpenseSchema), createExpense);
 
 /**
  * @route POST /api/expenses/pay
- * @desc Record payment for expenses
+ * @desc Record bulk payment for multiple expenses
  * @body {
- *   expenseType: 'bill' | 'expense',
- *   expenseId?: ObjectId,
- *   billSplitIds?: Array<ObjectId>,
- *   participantUserId?: ObjectId,
- *   paymentMethod?: String,
- *   note?: String
+ *   payments: Array<{
+ *     expenseId: ObjectId,
+ *     expenseType: 'bill' | 'expense',
+ *     amount: Number,
+ *     paymentMethod: String,
+ *     note: String
+ *   }>
  * }
  */
-router.post('/pay', validate(recordPaymentSchema), recordPayment);
+router.post('/pay', recordBulkPayment);
+
+/**
+ * @route GET /api/expenses/dues
+ * @desc Get user's pending dues for a flat
+ * @query flatId: ObjectId (required)
+ * @returns {
+ *   billDues: Array,
+ *   expenseDues: Array,
+ *   totalDue: Number
+ * }
+ */
+router.get('/dues', getUserDues);
 
 /**
  * @route GET /api/flats/:flatId/financials

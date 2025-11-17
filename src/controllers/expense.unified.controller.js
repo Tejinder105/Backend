@@ -39,6 +39,71 @@ export const recordPayment = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @route POST /api/expenses/pay-bulk
+ * @desc Record bulk payment for multiple expenses
+ * @access Private
+ */
+export const recordBulkPayment = asyncHandler(async (req, res) => {
+    const { payments } = req.body;
+    
+    if (!payments || !Array.isArray(payments) || payments.length === 0) {
+        throw new ApiError(400, "Payments array is required");
+    }
+    
+    const results = [];
+    const errors = [];
+    
+    // Process each payment
+    for (const payment of payments) {
+        try {
+            const result = await expenseService.recordPayment(payment, req.user._id);
+            results.push({
+                expenseId: payment.expenseId,
+                success: true,
+                data: result
+            });
+        } catch (error) {
+            errors.push({
+                expenseId: payment.expenseId,
+                success: false,
+                error: error.message
+            });
+        }
+    }
+    
+    const allSuccess = errors.length === 0;
+    
+    return res.status(allSuccess ? 200 : 207).json(
+        new ApiResponse(
+            allSuccess ? 200 : 207,
+            { results, errors, successCount: results.length, errorCount: errors.length },
+            allSuccess 
+                ? `Successfully processed ${results.length} payment(s)` 
+                : `Processed ${results.length} payment(s) with ${errors.length} error(s)`
+        )
+    );
+});
+
+/**
+ * @route GET /api/expenses/dues
+ * @desc Get user's pending dues for a flat
+ * @access Private
+ */
+export const getUserDues = asyncHandler(async (req, res) => {
+    const { flatId } = req.query;
+    
+    if (!flatId) {
+        throw new ApiError(400, "flatId query parameter is required");
+    }
+    
+    const dues = await expenseService.getUserDues(req.user._id, flatId);
+    
+    return res.status(200).json(
+        new ApiResponse(200, dues, "User dues fetched successfully")
+    );
+});
+
+/**
  * @route GET /api/flats/:flatId/financials
  * @desc Get complete financial summary (replaces multiple API calls)
  * @access Private
@@ -96,6 +161,8 @@ export const getExpenseHistory = asyncHandler(async (req, res) => {
 export default {
     createExpense,
     recordPayment,
+    recordBulkPayment,
+    getUserDues,
     getFinancialSummary,
     getExpenseHistory
 };
